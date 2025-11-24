@@ -10,7 +10,7 @@ async function startDownload() {
         }
 
         // Clear url fragment immediatly 
-        // window.location.replace(window.location.href.split('#')[0])
+        window.location.replace(window.location.href.split('#')[0])
 
         // base64 -> string -> byte array
         const keyData = urlSafeBase64ToUint8Array(keyBase64);
