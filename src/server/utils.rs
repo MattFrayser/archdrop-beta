@@ -1,10 +1,9 @@
 use crate::tui::TransferUI;
+use axum_server::tls_rustls::RustlsConfig;
+use rcgen::generate_simple_self_signed;
 use std::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::watch;
-
-use axum_server::tls_rustls::RustlsConfig;
-use rcgen::generate_simple_self_signed;
 
 pub async fn wait_for_server_ready(
     port: u16,
@@ -36,17 +35,16 @@ pub async fn wait_for_server_ready(
 pub fn spawn_tui(
     progress: watch::Receiver<f64>,
     file_name: String,
-    file_hash: String,
     qr_code: String,
-    url: String,
-) {
+    is_recieving: bool,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ui = TransferUI::new(progress, file_name, file_hash, qr_code, url);
+        let mut ui = TransferUI::new(progress, file_name, qr_code, is_recieving);
 
         if let Err(e) = ui.run().await {
             eprintln!("ui err: {}", e);
         }
-    });
+    })
 }
 
 pub fn shutdown_handler(handle: axum_server::Handle) {
@@ -64,15 +62,13 @@ pub fn get_local_ip() -> Option<String> {
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
 
+// Generate certs and load directly from memory
 pub async fn generate_cert(ip: &str) -> Result<RustlsConfig, Box<dyn std::error::Error>> {
     let subject_alt_names = vec![ip.to_string(), "localhost".to_string()];
-
     let cert = generate_simple_self_signed(subject_alt_names)?;
-    let cert_pem = cert.serialize_pem()?;
-    let key_pem = cert.serialize_private_key_pem();
 
-    tokio::fs::write("/tmp/archdrop-cert.pem", &cert_pem).await?;
-    tokio::fs::write("/tmp/archdrop-key.pem", &key_pem).await?;
+    let cert_pem = cert.serialize_pem()?.into_bytes();
+    let key_pem = cert.serialize_private_key_pem().into_bytes();
 
-    Ok(RustlsConfig::from_pem_file("/tmp/archdrop-cert.pem", "/tmp/archdrop-key.pem").await?)
+    Ok(RustlsConfig::from_pem(cert_pem, key_pem).await?)
 }

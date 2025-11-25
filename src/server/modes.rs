@@ -1,31 +1,25 @@
 use super::utils;
-use crate::qr;
 use crate::server::ServerDirection;
 use crate::tunnel::CloudflareTunnel;
+use crate::{output, qr};
 use axum::Router;
 use std::net::SocketAddr;
 use tokio::sync::watch;
-
-pub enum ServerMode {
-    Tunnel,
-    Local,
-    Http,
-}
 
 pub struct Server {
     pub app: Router,
     pub token: String,
     pub key: String,
     pub nonce: String,
-    pub progress_consumer: watch::Receiver<f64>,
     pub file_name: String,
-    pub file_hash: String,
+    pub progress_consumer: watch::Receiver<f64>,
 }
 
 pub async fn start_local(
     server: Server,
     direction: ServerDirection,
 ) -> Result<u16, Box<dyn std::error::Error>> {
+    let spinner = output::spinner("Starting local HTTPS server...");
     // local Ip and Certs
     let local_ip = utils::get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
     let tls_config = utils::generate_cert(&local_ip).await?;
@@ -34,6 +28,10 @@ pub async fn start_local(
     let addr = SocketAddr::from(([127, 0, 0, 0], 0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let port = listener.local_addr()?.port();
+    spinner.set_message(format!("Waiting for server on port {}...", port));
+
+    utils::wait_for_server_ready(port, 5).await?;
+    output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     let service = match direction {
         ServerDirection::Send => "download",
@@ -44,19 +42,28 @@ pub async fn start_local(
         "https://{}:{}/{}/{}#key={}&nonce={}",
         local_ip, port, service, server.token, server.key, server.nonce
     );
+    println!("{}", url);
 
     let qr_code = qr::generate_qr(&url);
-    utils::spawn_tui(
+    let tui_handle = utils::spawn_tui(
         server.progress_consumer,
         server.file_name,
-        server.file_hash,
         qr_code,
-        url,
+        service == "upload",
     );
 
     // HTTPS Server
     let handle = axum_server::Handle::new();
-    utils::shutdown_handler(handle.clone());
+
+    // Spawn shutdown waiter
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = tui_handle => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+        shutdown_handle.shutdown();
+    });
 
     // Start server
     axum_server::bind_rustls(addr, tls_config)
@@ -78,17 +85,15 @@ pub async fn start_http(
         nonce,
         progress_consumer,
         file_name,
-        file_hash,
     } = server;
-
     // Start local HTTP
-    let port = spawn_http_server(app).await?;
-    println!("listening on port {}", port);
+    let spinner = output::spinner("Starting local server...");
+    let (port, server_handle) = spawn_http_server(app).await?;
+    spinner.set_message(format!("Waiting for server on port {}...", port));
 
     // Wait for server to be ready before starting tunnel
-    println!("waiting for local server");
     utils::wait_for_server_ready(port, 5).await?;
-    println!("local server ready");
+    output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     let service = match direction {
         ServerDirection::Send => "download",
@@ -101,12 +106,18 @@ pub async fn start_http(
     );
     println!("{url}");
 
-    // Make Tui
+    // Spawn TUI and get handle
     let qr_code = qr::generate_qr(&url);
-    utils::spawn_tui(progress_consumer, file_name, file_hash, qr_code, url);
+    let tui_handle = utils::spawn_tui(progress_consumer, file_name, qr_code, service == "upload");
 
-    // Keep tunnel alive until Ctrl-C
-    tokio::signal::ctrl_c().await?;
+    // Wait for TUI to exit or Ctrl+C
+    tokio::select! {
+        _ = tui_handle => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+
+    // Graceful shutdown
+    server_handle.shutdown();
 
     Ok(port)
 }
@@ -122,25 +133,18 @@ pub async fn start_tunnel(
         nonce,
         progress_consumer,
         file_name,
-        file_hash,
     } = server;
     // Start local HTTP
-    let port = spawn_http_server(app).await?;
-
-    println!("listening on port {}", port);
+    let spinner = output::spinner("Starting local server...");
+    let (port, server_handle) = spawn_http_server(app).await?;
+    spinner.set_message(format!("Waiting for server on port {}...", port));
 
     // Wait for server to be ready before starting tunnel
-    println!("waiting for local server");
     utils::wait_for_server_ready(port, 5).await?;
-    println!("local server ready");
-
-    println!("Allowing server to fully initialize...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     // Start tunnel
-    println!("starting cloudflair tunnel");
     let tunnel = CloudflareTunnel::start(port).await?;
-    println!("tunnel started");
 
     let service = match direction {
         ServerDirection::Send => "download",
@@ -155,20 +159,25 @@ pub async fn start_tunnel(
         key,
         nonce
     );
-
-    println!("\nTunnel ready!");
     println!("{}", url);
 
+    // Spawn TUI and get handle
     let qr_code = qr::generate_qr(&url);
-    utils::spawn_tui(progress_consumer, file_name, file_hash, qr_code, url);
+    let tui_handle = utils::spawn_tui(progress_consumer, file_name, qr_code, service == "upload");
 
-    // Keep tunnel alive until Ctrl-C
-    tokio::signal::ctrl_c().await?;
+    // Wait for TUI to exit or Ctrl+C
+    tokio::select! {
+        _ = tui_handle => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+
+    // Graceful shutdown
+    server_handle.shutdown();
 
     Ok(port)
 }
 
-async fn spawn_http_server(app: Router) -> Result<u16, Box<dyn std::error::Error>> {
+async fn spawn_http_server(app: Router) -> Result<(u16, axum_server::Handle), Box<dyn std::error::Error>> {
     // Get random port
     let addr = SocketAddr::from(([0, 0, 0, 0], 0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -190,6 +199,5 @@ async fn spawn_http_server(app: Router) -> Result<u16, Box<dyn std::error::Error
         }
     });
 
-    utils::shutdown_handler(handle);
-    Ok(port)
+    Ok((port, handle))
 }

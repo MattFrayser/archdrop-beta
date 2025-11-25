@@ -7,7 +7,6 @@ use axum::response::{Html, Response};
 use futures::stream;
 use futures::StreamExt;
 use std::sync::Arc;
-use std::usize;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
@@ -160,10 +159,32 @@ pub async fn upload(
     // Create decryptor
     let mut decryptor = state.encryptor.create_stream_decryptor();
 
-    // decrypt and write to dest
-    let mut stream = body.into_data_stream();
-    let mut buffer = Vec::new();
+    // Clone progress sender for tracking
+    let progress_sender = state.progress_sender.clone();
 
+    // Read first 8 bytes for total encrypted size
+    let mut stream = body.into_data_stream();
+    let mut size_buffer = Vec::with_capacity(8);
+
+    // Accumulate exactly 8 bytes for size header
+    while size_buffer.len() < 8 {
+        let chunk = stream.next().await
+            .ok_or(StatusCode::BAD_REQUEST)?
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        size_buffer.extend_from_slice(&chunk);
+    }
+
+    // Parse total size from first 8 bytes (big-endian)
+    let total_size = u64::from_be_bytes([
+        size_buffer[0], size_buffer[1], size_buffer[2], size_buffer[3],
+        size_buffer[4], size_buffer[5], size_buffer[6], size_buffer[7],
+    ]) as f64;
+
+    // Use remaining bytes after size header as initial buffer
+    let mut buffer: Vec<u8> = size_buffer.drain(8..).collect();
+    let mut bytes_received = buffer.len() as u64;
+
+    // Process encrypted frames
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| {
             eprintln!("Stream error: {}", e);
@@ -171,6 +192,7 @@ pub async fn upload(
         })?;
 
         buffer.extend_from_slice(&chunk);
+        bytes_received += chunk.len() as u64;
 
         // parse framed chunks
         while buffer.len() >= 4 {
@@ -191,8 +213,12 @@ pub async fn upload(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-            // reomve decrypted chunk
+            // remove decrypted chunk
             buffer.drain(..4 + len);
+
+            // Update progress
+            let progress = (bytes_received as f64 / total_size) * 100.0;
+            let _ = progress_sender.lock().await.send(progress.min(100.0));
         }
     }
 
@@ -200,6 +226,9 @@ pub async fn upload(
     file.flush()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Send final 100% progress
+    let _ = progress_sender.lock().await.send(100.0);
 
     println!("Upload complete");
 

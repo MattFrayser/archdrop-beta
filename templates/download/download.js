@@ -43,7 +43,7 @@ async function startDownload() {
                 const decrypted = await crypto.subtle.decrypt(
                     { name: 'AES-GCM', iv: nonce },
                     key,
-                    encryptedChunk
+                    frame
                 )
 
                 chunks.push(new Uint8Array(decrypted)) // store in plain text
@@ -71,7 +71,7 @@ async function startDownload() {
 
     } catch(error) {
         console.error(error)
-        alert(`Download failed: ${response.status}`)
+        alert(`Download failed: ${error.message}`)
     }
 }
 

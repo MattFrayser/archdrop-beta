@@ -1,28 +1,16 @@
 
 function urlSafeBase64ToUint8Array(str) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    // conver base64 to be url safe
+    const base64 = str.replace(/-/g, '+').replace(/_/g, '/')
 
-    str = str.replace(/=/g, '')
+    const binaryString = atob(base64)
+    const bytes = new Uint8Array(binaryString.length)
 
-    const bytes = []
-    let buffer = 0
-    let bitsInBuffer = 0
-
-    for (let i = 0; i < str.length; i++) {
-        const value = chars.indexOf(str[i])
-        if (value === -1) {
-            throw new Error (`Invalid base64 character: ${str[i]}`)
-        }
-
-        buffer = (buffer << 6) | value
-        bitsInBuffer += 6
-
-        if (bitsInBuffer >= 8) {
-            bytes.push((buffer >> (bitsInBuffer - 8)) & 0xFF)
-            bitsInBuffer -= 8
-        }
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
     }
-    return new Uint8Array(bytes)
+
+    return bytes
 }
 
 // Construct nonce to match Rusts EncryptorBE32
@@ -114,7 +102,7 @@ function* parseFrames(buffer) {
 }
 
 async function calculateHash(data) {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', fileData)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
     const hashArray = Array.from(new Uint8Array(hashBuffer))
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
     return hashHex

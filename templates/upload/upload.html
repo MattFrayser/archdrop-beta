@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <meta http-equiv="refresh" content="3">
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -143,77 +142,125 @@
       display: none;
     }
 
-    .file-info {
-      margin-top: 24px;
-      padding: 16px;
-      background: #edf2f7;
-      border-radius: 12px;
-      display: none;
-      align-items: center;
-      gap: 12px;
-      text-align: left;
+    .file-list {
+        margin-top: 32px;
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 200px;  /* Adjust this value as needed */
+    overflow-y: auto;
+    overflow-x: hidden;
+        padding-right: 8px;
+    }
+    .file-list.show {
+        display: flex;
     }
 
-    .file-info.show {
-      display: flex;
+        .file-list::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .file-list::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 4px;
+    }
+
+    .file-list::-webkit-scrollbar-thumb {
+        background: #cbd5e0;
+        border-radius: 4px;
+    }
+
+    .file-list::-webkit-scrollbar-thumb:hover {
+        background: #a0aec0;
+    }
+
+    .file-list.show {
+        display: flex;
+    }
+
+    .file-item {
+        padding: 16px;
+        background: #edf2f7;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
     }
 
     .file-icon {
-      width: 40px;
-      height: 40px;
-      background: #5E827B;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
+        width: 40px;
+        height: 40px;
+        background: #5E827B;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
     }
 
     .file-icon svg {
-      width: 20px;
-      height: 20px;
-      stroke: white;
-      fill: none;
-      stroke-width: 2;
+        width: 20px;
+        height: 20px;
+        stroke: white;
+        fill: none;
+        stroke-width: 2;
     }
 
     .file-details {
-      flex: 1;
+        flex: 1;
+        min-width: 0; /* Allow text truncation */
     }
 
     .file-name {
-      color: #1a202c;
-      font-weight: 600;
-      font-size: 14px;
-      margin-bottom: 4px;
-      word-break: break-all;
+        color: #1a202c;
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+        word-break: break-all;
     }
 
     .file-size {
-      color: #718096;
-      font-size: 12px;
+        color: #718096;
+        font-size: 12px;
     }
 
-    .remove-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 8px;
-      border-radius: 6px;
-      transition: background 0.2s;
+    .remove-file-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 6px;
+        transition: background 0.2s;
     }
 
-    .remove-btn:hover {
-      background: #e2e8f0;
+    .remove-file-btn:hover {
+        background: #e2e8f0;
     }
 
-    .remove-btn svg {
-      width: 20px;
-      height: 20px;
-      stroke: #a0aec0;
-      fill: none;
-      stroke-width: 2;
+    .remove-file-btn svg {
+        width: 20px;
+        height: 20px;
+        stroke: #a0aec0;
+        fill: none;
+        stroke-width: 2;
     }
+
+    .file-list-summary {
+    margin-top: 4px;
+    padding: 12px;
+    background: #f7fafc;
+    border-radius: 8px;
+    text-align: center;
+    color: #4a5568;
+    font-size: 14px;
+    font-weight: 600;
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    border-top: 1px solid #e2e8f0;
+    }
+
 
     .upload-btn {
       background: #020202;
@@ -264,26 +311,10 @@
                 </svg>
                 <div class="upload-text">Choose a file or drag it here</div>
                 <div class="upload-hint">Maximum file size: 50MB</div>
-                <input type="file" id="fileInput" accept="*/*">
+                <input type="file" id="fileInput" accept="*/*" multiple>
             </div>
-            <div class="file-info" id="fileInfo">
-                <div class="file-icon">
-                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-                        <polyline points="13 2 13 9 20 9"></polyline>
-                    </svg>
-                </div>
-                <div class="file-details">
-                    <div class="file-name" id="fileName"></div>
-                    <div class="file-size" id="fileSize"></div>
-                </div>
-                <button class="remove-btn" id="removeBtn">
-                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
+
+            <div class="file-list" id="fileList"></div>
 
             <button class="upload-btn" id="uploadBtn" onclick="uploadFile()">Upload File</button>
 
@@ -293,7 +324,7 @@
                     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                     <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                 </svg>
-                <span id="file-hash">Hash: klasdfkljasjdsafhfls</span>
+                <span>End-to-end encrypted (AES-256-GCM)</span>
             </div>
         </div>
     </div>

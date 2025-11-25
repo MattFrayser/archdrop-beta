@@ -55,20 +55,3 @@ impl Encryptor {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.nonce)
     }
 }
-
-pub async fn calculate_file_hash(path: &str) -> Result<String, std::io::Error> {
-    let mut file = File::open(path).await?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer).await?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    let result = hasher.finalize();
-    Ok(format!("{:x}", result))
-}

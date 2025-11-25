@@ -1,8 +1,9 @@
+use archdrop::output;
 use archdrop::server::{self, ServerMode};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
@@ -16,7 +17,6 @@ struct Cli {
     command: Commands,
 }
 
-// set a enum for possible future commands
 #[derive(Subcommand)]
 enum Commands {
     Send {
@@ -26,7 +26,10 @@ enum Commands {
         #[arg(long, help = "Use HTPS with self-signed cert. (Faster)")]
         local: bool,
 
-        #[arg(long, help = "Use HTTP (Faster)")]
+        #[arg(
+            long,
+            help = "Use HTTP. Downloads may not work on all devices. (Fastest)"
+        )]
         http: bool,
     },
     Recieve {
@@ -43,7 +46,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
-    // test_encryption();
     // Reads std::env::args(), matches against struct def
     let cli = Cli::parse();
 
@@ -53,7 +55,7 @@ async fn main() {
             // fail fast on no file
             if !path.exists() {
                 // file.display() formats paths
-                eprintln!("Error: File not found: {}", path.display());
+                output::error(&format!("File not found: {}", path.display()));
                 std::process::exit(1);
             }
 
@@ -79,7 +81,7 @@ async fn main() {
             match server::start_server(file_to_send, mode, server::ServerDirection::Send).await {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    output::error(&format!("{}", e));
                     std::process::exit(1);
                 }
             }
@@ -97,18 +99,19 @@ async fn main() {
             // check dir location exits
             if !destination.exists() {
                 if let Err(e) = tokio::fs::create_dir_all(&destination).await {
-                    eprintln!(
-                        "Error: Cannot create directory {}: {}",
+                    output::error(&format!(
+                        "Cannot create directory {}: {}",
                         destination.display(),
                         e
-                    );
+                    ));
                     std::process::exit(1);
                 }
             }
 
             // Verify its a dir
             if !destination.is_dir() {
-                eprintln!("Error: {} is not a directory", destination.display());
+                output::error(&format!("{} is not a directory", destination.display()));
+                std::process::exit(1);
             }
 
             // handle local flag
@@ -124,7 +127,7 @@ async fn main() {
             match server::start_server(destination, mode, server::ServerDirection::Recieve).await {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    output::error(&format!("{}", e));
                     std::process::exit(1);
                 }
             }
@@ -133,7 +136,8 @@ async fn main() {
 }
 
 async fn create_zip_from_dir(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let dir_name = dir.file_name()
+    let dir_name = dir
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("archive");
 
@@ -142,8 +146,7 @@ async fn create_zip_from_dir(dir: &Path) -> Result<PathBuf, Box<dyn std::error::
 
     let file = File::create(&zip_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();

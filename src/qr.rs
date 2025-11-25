@@ -10,8 +10,3 @@ pub fn generate_qr(url: &str) -> String {
         .light_color(unicode::Dense1x2::Dark)
         .build()
 }
-
-pub fn print_qr(url: &str) {
-    println!("\n{}\n", generate_qr(url));
-    println!("{}", url)
-}

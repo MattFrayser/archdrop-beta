@@ -40,7 +40,6 @@ pub async fn start_server(
 
     // Progress channel
     let (progress_sender, progress_consumer) = watch::channel(0.0); // make progress channel
-    let file_hash = "";
     let file_name = file_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -79,7 +78,6 @@ pub async fn start_server(
         nonce,
         progress_consumer,
         file_name,
-        file_hash: file_hash.to_owned(),
     };
 
     match mode {
