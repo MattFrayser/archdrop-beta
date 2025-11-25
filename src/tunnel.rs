@@ -1,8 +1,6 @@
-use futures::FutureExt;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::signal;
 
 pub struct CloudflareTunnel {
     process: Child,
@@ -27,24 +25,29 @@ impl CloudflareTunnel {
                 "--url",
                 &format!("http://localhost:{}", local_port),
                 "--no-autoupdate",
+                "--protocol",
+                "http2",
             ])
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let stdout = child.stdout.take().ok_or("No stdout")?;
         let stderr = child.stderr.take().ok_or("No stderr")?;
 
-        // Parse both streams with timeout
-        let url = tokio::select! {
-            result = Self::parse_stream(stdout) => result?,
-            result = Self::parse_stream(stderr) => result?,
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
-                return Err("Tunnel startup timed out after 30 seconds".into());
-            }
-        };
+        // Parse stream with timeout
+        // reader keeps stream alive after url
+        let (url, reader) = tokio::time::timeout(
+            tokio::time::Duration::from_secs(30),
+            Self::parse_stream(stderr),
+        )
+        .await
+        .map_err(|_| "Tunnel startup timed out.")??;
 
         println!("{:?}", url);
+
+        tokio::spawn(async move {
+            Self::monitor_stderr(reader).await;
+        });
 
         Ok(Self {
             process: child,
@@ -54,19 +57,33 @@ impl CloudflareTunnel {
 
     async fn parse_stream(
         stream: impl tokio::io::AsyncRead + Unpin,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<(String, BufReader<impl tokio::io::AsyncRead + Unpin>), Box<dyn std::error::Error>>
+    {
         let reader = BufReader::new(stream);
         let mut lines = reader.lines();
 
         while let Some(line) = lines.next_line().await? {
+            println!("[cloudflared] {}", line); // Log all output
             if line.contains("trycloudflare.com") {
                 if let Some(url) = Self::extract_url(&line) {
-                    return Ok(url);
+                    // Return URL and the reader to continue monitoring
+                    return Ok((url, lines.into_inner()));
                 }
             }
         }
 
         Err("No tunnel URL found".into())
+    }
+
+    async fn monitor_stderr(stream: BufReader<impl tokio::io::AsyncRead + Unpin>) {
+        let mut lines = stream.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Only log errors - keep the stream alive without spam
+            if line.contains("ERR") || line.contains("error") || line.contains("failed") {
+                eprintln!("[cloudflared] {}", line);
+            }
+            // Silently consume all other output to keep tunnel alive
+        }
     }
 
     pub fn url(&self) -> &str {
@@ -94,11 +111,21 @@ impl CloudflareTunnel {
                 let url = rest
                     .split_whitespace()
                     .next()?
-                    .trim_end_matches(&[',', '.', ';', '|', '+', '-', ' '][..]);
+                    .trim_end_matches(&[',', '.', ';', '|', '+', '-', ' ', '"', ')', ']'][..]);
 
                 // Verify it's a valid URL
-                if url.starts_with("https://") && url.contains("trycloudflare.com") {
-                    return Some(url.to_string());
+                // Looking for https://random.trycloudflare.com
+                if url.starts_with("https://")
+                    && url.contains("trycloudflare.com")
+                    && !url.contains("api.trycloudflare.com")
+                    && !url.contains("/tunnel")
+                {
+                    // ensure proper ending
+                    if let Some(end_idx) = url.find(".trycloudflare.com") {
+                        let url_part = &url[..end_idx + ".trycloudflare.com".len()];
+
+                        return Some(url_part.to_string());
+                    }
                 }
             }
         }

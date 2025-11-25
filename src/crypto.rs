@@ -1,20 +1,22 @@
 use aes_gcm::{
-    aead::{OsRng},
-    aead::stream::{EncryptorBE32},  // ← Stream types
-    aead::generic_array::GenericArray,  // ← For type conversions
+    aead::{
+        generic_array::GenericArray,
+        stream::{DecryptorBE32, EncryptorBE32},
+        OsRng,
+    },
     Aes256Gcm,
 };
+use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use base64::{Engine as _, engine::general_purpose};
 
 pub struct Encryptor {
-    key: [u8; 32], 
+    key: [u8; 32],
     // EncryptorBE32 adds 32-bit counter + 8-bit last-block flag
     // 7 bytes nonce + 4 bytes counter + 1 byte flag = 12 bytes
-    nonce: [u8; 7], 
+    nonce: [u8; 7],
 }
 
 impl Encryptor {
@@ -35,6 +37,15 @@ impl Encryptor {
         // EncryptorBE32 handles nonce increment automatically
         // Internally constructs: [7 random bytes][5 bytes for counter]
         EncryptorBE32::new(key, nonce)
+    }
+
+    pub fn create_stream_decryptor(&self) -> DecryptorBE32<Aes256Gcm> {
+        let key = GenericArray::from_slice(&self.key);
+        let nonce = GenericArray::from_slice(&self.nonce);
+
+        // Decryptor also handles nonce
+        // expects same format as EncryptorBE32
+        DecryptorBE32::new(key, nonce)
     }
     pub fn get_key_base64(&self) -> String {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.key)
@@ -61,7 +72,3 @@ pub async fn calculate_file_hash(path: &str) -> Result<String, std::io::Error> {
     let result = hasher.finalize();
     Ok(format!("{:x}", result))
 }
-
-
-
-
