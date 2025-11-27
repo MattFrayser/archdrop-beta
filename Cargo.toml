@@ -1,10 +1,10 @@
 [package]
 name = "archdrop"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.6", features = ["v4"] }
 clap = { version = "4.4", features = ["derive"] }
@@ -27,3 +27,4 @@ regex = "1"
 indicatif = "0.17"
 console = "0.15"
 anyhow = "1.0"
+sysinfo = "0.30"

@@ -90,12 +90,8 @@ impl CloudflareTunnel {
 
     async fn monitor_stderr(stream: BufReader<impl tokio::io::AsyncRead + Unpin>) {
         let mut lines = stream.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            // Only log errors - keep the stream alive without spam
-            if line.contains("ERR") || line.contains("error") || line.contains("failed") {
-                output::error(&format!("[cloudflared] {}", line));
-            }
-            // Silently consume all other output to keep tunnel alive
+        while let Ok(Some(_)) = lines.next_line().await {
+            // Silently consume all output to keep tunnel alive
         }
     }
 

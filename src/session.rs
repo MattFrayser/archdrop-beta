@@ -39,11 +39,8 @@ impl SessionStore {
         let token = Uuid::new_v4().to_string();
 
         // Acquire lock to HashMap
-        // if annother tasks holds lock, await (doesnt block thread)
         let mut sessions = self.sessions.lock().await;
 
-        // clone() is used since HashMap::insert takes ownership of the key
-        // without it token would move and be unavailable for return
         sessions.insert(
             token.clone(),
             SessionData {
@@ -54,6 +51,9 @@ impl SessionStore {
         );
 
         token
+
+        // Note sessions are not cleaned up: this is intentional since
+        // short runtimes are expected
     }
 
     pub async fn validate_and_mark_used(&self, token: &str) -> Option<PathBuf> {

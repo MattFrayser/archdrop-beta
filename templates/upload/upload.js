@@ -140,110 +140,83 @@ function removeFile(index) {
 }
 
 // Upload files
-async function uploadFile() {
+async function uploadFiles(selectedFiles) {
     if (selectedFiles.length === 0) {
-        alert('Please select at least one file');
+        alert('Please select files');
         return;
     }
 
+    const uploadBtn = document.getElementById('uploadBtn');
     uploadBtn.disabled = true;
-    const originalText = uploadBtn.textContent;
-    uploadBtn.textContent = 'Uploading...';
 
     try {
-        const zip = new JSZip();
-
-        for (const file of selectedFiles) {
-            const path = file.webkitRelativePath || file.name;
-            zip.file(path, file);
-        }
-
-        const zipBlob = await zip.generateAsync({
-            type: 'blob',
-            compression: 'DEFLATE',
-            compressionOptions: { level: 6 }
-        }, (metadata) => {
-            const progress = metadata.percent.toFixed(0);
-            uploadBtn.textContent = `Compressing... ${progress}%`;
-        });
-        
-        console.log("zip created");
-
-        uploadBtn.textContent = 'Encrypting...';
-
         const { key, nonceBase } = await getCredentialsFromUrl();
-        const encryptedFrames = await encryptZipStream(zipBlob, key, nonceBase);
-        console.log("Encrypt complete");
-
-        uploadBtn.textContent = 'Uploading...';
-
         const token = window.location.pathname.split('/').pop();
-        const blob = new Blob(encryptedFrames);
 
-        // Create 8-byte size header (big-endian u64)
-        const sizeHeader = new ArrayBuffer(8);
-        const sizeView = new DataView(sizeHeader);
-        sizeView.setBigUint64(0, BigInt(blob.size), false); // false = big-endian
-
-        // Combine size header + encrypted data
-        const bodyWithSize = new Blob([sizeHeader, blob]);
-
-        const response = await fetch(`/upload/${token}/data`, {
-            method: 'POST',
-            body: bodyWithSize,
-            headers: {
-                'Content-Type': 'application/octet-stream',
-                'X-Filename': selectedFiles.length === 1
-                    ? selectedFiles[0].name
-                    : 'upload.zip',
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`Upload failed: ${response.status}`);
+        // Upload each file individually
+        for (let i = 0; i < selectedFiles.length; i++) {
+            const file = selectedFiles[i];
+            
+            uploadBtn.textContent = `Uploading ${i + 1}/${selectedFiles.length}: ${file.name}`;
+            
+            await uploadSingleFile(file, token, key, nonceBase, i, selectedFiles.length);
         }
 
-        console.log("upload successful");
-        
         uploadBtn.textContent = 'Upload Complete!';
         setTimeout(() => {
-            selectedFiles = [];
-            fileInput.value = '';
-            updateFileList();
             uploadBtn.disabled = false;
-            uploadBtn.textContent = originalText;
+            uploadBtn.textContent = 'Upload';
         }, 2000);
 
     } catch (error) {
-        console.error('upload error:', error);
+        console.error('Upload error:', error);
         alert(`Upload failed: ${error.message}`);
         uploadBtn.disabled = false;
-        uploadBtn.textContent = originalText;
     }
 }
 
-async function encryptZipStream(zipBlob, key, nonceBase) {
-    const encryptedFrames = [];
+async function uploadSingleFile(file, token, key, nonceBase, index, total) {
+    // Read file in chunks for encryption
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+    const encryptedChunks = [];
     let counter = 0;
 
-    const reader = zipBlob.stream().getReader();
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
+    // Encrypt in chunks
+    for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+        const chunk = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size));
+        const arrayBuffer = await chunk.arrayBuffer();
+        
         const nonce = generateNonce(nonceBase, counter++);
         const encrypted = await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv: nonce },
             key,
-            value
+            arrayBuffer
         );
-
-        const frame = createFrame(encrypted);
-        encryptedFrames.push(frame);
+        
+        encryptedChunks.push(createFrame(encrypted));
     }
 
-    return encryptedFrames;
+    // Create blob from encrypted chunks
+    const encryptedBlob = new Blob(encryptedChunks);
+
+    // relative path for rebuilding
+    const relativePath = file.webkitRelativePath || file.name
+
+    // Send via multipart
+    const formData = new FormData();
+    formData.append('file', encryptedBlob, file.name);
+    formData.append('fileIndex', index);
+    formData.append('totalFiles', total);
+    formData.append('relativePath', relativePath)
+
+    const response = await fetch(`/upload/${token}/file/${index}`, {
+        method: 'POST',
+        body: formData
+    });
+
+    if (!response.ok) {
+        throw new Error(`Upload failed for ${file.name}: ${response.status}`);
+    }
 }
 
 function formatFileSize(bytes) {

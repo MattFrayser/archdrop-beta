@@ -23,14 +23,8 @@ enum Commands {
         #[arg(help = "Path to file to send")]
         path: PathBuf, // PathBuf for typesafe paths
 
-        #[arg(long, help = "Use HTPS with self-signed cert. (Faster)")]
+        #[arg(long, help = "Use HTTPS with self-signed cert. (Faster)")]
         local: bool,
-
-        #[arg(
-            long,
-            help = "Use HTTP. Downloads may not work on all devices. (Fastest)"
-        )]
-        http: bool,
     },
     Receive {
         #[arg(default_value = ".", help = "Destination directory")]
@@ -38,9 +32,6 @@ enum Commands {
 
         #[arg(long)]
         local: bool,
-
-        #[arg(long)]
-        http: bool,
     },
 }
 
@@ -50,7 +41,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Send { path, local, http } => {
+        Commands::Send { path, local } => {
             // PathBuf.exits(); Check for file before spinning up
             // fail fast on no file
             ensure!(path.exists(), "File not found: {}", path.display());
@@ -58,8 +49,6 @@ async fn main() -> Result<()> {
             // handle local flag
             let mode = if local {
                 ServerMode::Local
-            } else if http {
-                ServerMode::Http
             } else {
                 ServerMode::Tunnel
             };
@@ -82,11 +71,7 @@ async fn main() -> Result<()> {
                 let _ = tokio::fs::remove_file(temp_path).await;
             }
         }
-        Commands::Receive {
-            destination,
-            local,
-            http,
-        } => {
+        Commands::Receive { destination, local } => {
             // check dir location exits
             if !destination.exists() {
                 tokio::fs::create_dir_all(&destination)
@@ -95,19 +80,21 @@ async fn main() -> Result<()> {
             }
 
             // Verify its a dir
-            ensure!(destination.is_dir(), "{} is not a directory", destination.display());
+            ensure!(
+                destination.is_dir(),
+                "{} is not a directory",
+                destination.display()
+            );
 
             // handle local flag
             let mode = if local {
                 ServerMode::Local
-            } else if http {
-                ServerMode::Http
             } else {
                 ServerMode::Tunnel
             };
 
             //  Start server with mode
-            server::start_server(destination, mode, server::ServerDirection::Receive)          
+            server::start_server(destination, mode, server::ServerDirection::Receive)
                 .await
                 .context("Failed to start file receiver")?;
         }
@@ -124,8 +111,10 @@ fn create_zip_from_dir(dir: &Path) -> Result<PathBuf> {
     let temp_dir = std::env::temp_dir();
     let zip_path = temp_dir.join(format!("{}.zip", dir_name));
 
-    let file = File::create(&zip_path)
-        .context(format!("Failed to create zip file at {}", zip_path.display()))?;
+    let file = File::create(&zip_path).context(format!(
+        "Failed to create zip file at {}",
+        zip_path.display()
+    ))?;
 
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -133,18 +122,33 @@ fn create_zip_from_dir(dir: &Path) -> Result<PathBuf> {
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
 
-        let name = path.strip_prefix(dir)
+        let name = path
+            .strip_prefix(dir)
             .context(format!("Invalid path in directory: {}", path.display()))?;
 
         if path.is_file() {
             zip.start_file(name.to_string_lossy().to_string(), options)
                 .context(format!("Failed to add {} to archive", name.display()))?;
 
-            let contents = std::fs::read(path)
-                .context(format!("Failed to read file: {}", path.display()))?;
+            // stream file
+            let mut file_reader =
+                File::open(path).context(format!("Failed to open file: {}", path.display()))?;
 
-            zip.write_all(&contents)
-                .context(format!("Failed to write {} to archive", name.display()))?;
+            const CHUNK_SIZE: usize = 65536; // 64kb
+            let mut buffer = vec![0u8; CHUNK_SIZE];
+
+            loop {
+                let bytes_read = file = file_render
+                    .read(&mut buffer)
+                    .context(format!("Failed to read from {}", path.display()))?;
+
+                // EOF
+                if bytes_read == 0 {
+                    break;
+                }
+                zip.write_all(&buffer[..bytes_read])
+                    .context(format!("Failed to write {} to archive", name.display()))?;
+            }
         } else if !name.as_os_str().is_empty() {
             zip.add_directory(name.to_string_lossy().to_string(), options)?;
         }

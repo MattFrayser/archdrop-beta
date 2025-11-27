@@ -6,10 +6,13 @@ use std::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::watch;
 
-pub async fn wait_for_server_ready(port: u16, timeout_secs: u64) -> Result<()> {
-    let url = format!("http://127.0.0.1:{}/health", port);
+pub async fn wait_for_server_ready(port: u16, timeout_secs: u64, use_https: bool) -> Result<()> {
+    let protocol = if use_https { "https" } else { "http" };
+    let url = format!("{}://127.0.0.1:{}/health", protocol, port);
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
+        .danger_accept_invalid_certs(true) // Accept self-signed certificates
         .build()
         .context("Failed to create HTTP client")?;
 

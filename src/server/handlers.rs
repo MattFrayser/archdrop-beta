@@ -1,14 +1,13 @@
 use crate::crypto::Encryptor;
 use crate::session::SessionStore;
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Multipart, Path, State};
+use axum::http::StatusCode;
 use axum::response::{Html, Response};
 use futures::stream;
-use futures::StreamExt;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
 #[derive(Clone)]
@@ -128,10 +127,9 @@ pub async fn serve_download_js() -> Response {
 }
 
 pub async fn upload(
-    Path(token): Path<String>,
+    Path((token, file_index)): Path<(String, usize)>,
     State(state): State<AppState>,
-    _headers: HeaderMap,
-    body: Body,
+    mut multipart: Multipart,
 ) -> Result<Response, StatusCode> {
     // Validate token
     let dest_dir = state
@@ -140,102 +138,92 @@ pub async fn upload(
         .await
         .ok_or(StatusCode::FORBIDDEN)?;
 
-    // naming
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("upload_{}.zip", timestamp);
-    let dest_path = std::path::Path::new(&dest_dir).join(&filename);
+    let mut filename = String::new();
+    let mut relative_path = String::new();
+    let mut file_data = Vec::new();
+    let mut total_files = 1;
 
-    let mut file = File::create(&dest_path).await.map_err(|e| {
-        eprintln!("Failed to create file: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // Create decryptor
-    let mut decryptor = state.encryptor.create_stream_decryptor();
-
-    // Clone progress sender for tracking
-    let progress_sender = state.progress_sender.clone();
-
-    // Read first 8 bytes for total encrypted size
-    let mut stream = body.into_data_stream();
-    let mut size_buffer = Vec::with_capacity(8);
-
-    // Accumulate exactly 8 bytes for size header
-    while size_buffer.len() < 8 {
-        let chunk = stream
-            .next()
-            .await
-            .ok_or(StatusCode::BAD_REQUEST)?
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        size_buffer.extend_from_slice(&chunk);
-    }
-
-    // Parse total size from first 8 bytes (big-endian)
-    let total_size = u64::from_be_bytes([
-        size_buffer[0],
-        size_buffer[1],
-        size_buffer[2],
-        size_buffer[3],
-        size_buffer[4],
-        size_buffer[5],
-        size_buffer[6],
-        size_buffer[7],
-    ]) as f64;
-
-    // Use remaining bytes after size header as initial buffer
-    let mut buffer: Vec<u8> = size_buffer.drain(8..).collect();
-    let mut bytes_received = buffer.len() as u64;
-
-    // Process encrypted frames
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| {
-            eprintln!("Stream error: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-
-        buffer.extend_from_slice(&chunk);
-        bytes_received += chunk.len() as u64;
-
-        // parse framed chunks
-        while buffer.len() >= 4 {
-            let len = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
-
-            if buffer.len() < 4 + len {
-                break; // wait for more data
+    // Parse multipart fields
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        match field.name() {
+            Some("file") => {
+                filename = field
+                    .file_name()
+                    .unwrap_or(&format!("file_{}", file_index))
+                    .to_string();
+                file_data = field
+                    .bytes()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .to_vec();
             }
-
-            let encrypted_chunk = &buffer[4..4 + len];
-            let plaintext = decryptor.decrypt_next(encrypted_chunk).map_err(|e| {
-                eprintln!("Decryption failed: {:?}", e);
-                StatusCode::BAD_REQUEST
-            })?;
-
-            file.write_all(&plaintext).await.map_err(|e| {
-                eprintln!("Failed to write to file: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-            // remove decrypted chunk
-            buffer.drain(..4 + len);
-
-            // Update progress
-            let progress = (bytes_received as f64 / total_size) * 100.0;
-            let _ = progress_sender.send(progress.min(100.0));
+            Some("relativePath") => {
+                relative_path = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+            }
+            Some("totalFiles") => {
+                let text = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                total_files = text.parse::<usize>().unwrap_or(1);
+            }
+            _ => {}
         }
     }
 
-    // ensure all data is written
-    file.flush()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Decrypt framed data
+    let mut decryptor = state.encryptor.create_stream_decryptor();
+    let mut buffer = file_data.as_slice();
+    let mut plaintext = Vec::new();
 
-    // Send final 100% progress
-    let _ = progress_sender.send(100.0);
+    // Parse and decrypt frames
+    while buffer.len() >= 4 {
+        let len = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
 
-    println!("Upload complete");
+        if buffer.len() < 4 + len {
+            break;
+        }
 
-    let response_json = format!(r#"{{"success":true,"filename":"{}"}}"#, filename);
+        let encrypted_chunk = &buffer[4..4 + len];
+        let decrypted = decryptor.decrypt_next(encrypted_chunk).map_err(|e| {
+            eprintln!("Decryption failed: {:?}", e);
+            StatusCode::BAD_REQUEST
+        })?;
 
+        plaintext.extend_from_slice(&decrypted);
+        buffer = &buffer[4 + len..];
+    }
+
+    // Determine file path (preserve directory structure)
+    let file_path = if !relative_path.is_empty() {
+        std::path::Path::new(&dest_dir).join(&relative_path)
+    } else {
+        std::path::Path::new(&dest_dir).join(&filename)
+    };
+
+    // Create parent directories if needed
+    if let Some(parent) = file_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            eprintln!("Failed to create directory: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    // Write file
+    tokio::fs::write(&file_path, plaintext).await.map_err(|e| {
+        eprintln!("Failed to write file: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    println!(
+        "Saved file {}/{}: {}",
+        file_index + 1,
+        total_files,
+        file_path.display()
+    );
+
+    let response_json = r#"{"success":true}"#;
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")

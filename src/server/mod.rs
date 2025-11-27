@@ -15,7 +15,6 @@ use tokio::sync::watch;
 
 pub enum ServerMode {
     Local,
-    Http,
     Tunnel,
 }
 #[derive(Debug)]
@@ -64,7 +63,7 @@ pub async fn start_server(
         ServerDirection::Receive => Router::new()
             .route("/health", get(|| async { "OK" }))
             .route("/upload/:token", get(handlers::serve_upload_page))
-            .route("/upload/:token/data", post(handlers::upload))
+            .route("/upload/:token/file/:index", post(handlers::upload))
             .route("/upload.js", get(handlers::serve_upload_js))
             .route("/crypto.js", get(handlers::serve_crypto_js))
             .with_state(state),
@@ -80,8 +79,7 @@ pub async fn start_server(
     };
 
     match mode {
-        ServerMode::Local => modes::start_local(server, direction).await,
+        ServerMode::Local => modes::start_https(server, direction).await,
         ServerMode::Tunnel => modes::start_tunnel(server, direction).await,
-        ServerMode::Http => modes::start_http(server, direction).await,
     }
 }
