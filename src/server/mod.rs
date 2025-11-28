@@ -28,13 +28,12 @@ pub async fn start_server(
     mode: ServerMode,
     direction: ServerDirection,
 ) -> Result<u16> {
-    let sessions = SessionStore::new();
     let encryptor = Encryptor::new();
+    let (sessions, token) = SessionStore::new(file_path.clone());
 
     // encrypion values
     let key = encryptor.get_key_base64();
     let nonce = encryptor.get_nonce_base64();
-    let token = sessions.create_session(file_path.clone()).await;
 
     // Progress channel
     let (progress_sender, progress_consumer) = watch::channel(0.0); // make progress channel

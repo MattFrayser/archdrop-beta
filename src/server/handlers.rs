@@ -1,4 +1,4 @@
-use crate::crypto::Encryptor;
+use crate::crypto::{EncryptedFileStream, Encryptor};
 use crate::session::SessionStore;
 use axum::body::Body;
 use axum::extract::Query;
@@ -11,7 +11,7 @@ use serde_json::{from_str, json, to_string_pretty, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
 #[derive(Clone)]
@@ -99,58 +99,17 @@ pub async fn send_handler(
 
     // file meta data for progress
     let file_metadata = tokio::fs::metadata(&file_path).await?;
-    let total_size = file_metadata.len() as f64;
-    let bytes_sent = 0u64;
+    let total_size = file_metadata.len() as u64;
 
     // Async Stream
-    // Create sream form state machine
-    let stream = stream::unfold(
-        (
-            file,
-            encryptor,
-            [0u8; 65536], // 64KB buffer
-            bytes_sent,
-            total_size,
-            progress_sender,
-        ),
-        |(mut file, mut enc, mut buf, mut bytes_sent, total_size, progress_sender)| async move {
-            //consume buffer
-            match file.read(&mut buf).await {
-                Ok(0) => {
-                    let _ = progress_sender.send(100.0);
-                    None
-                }
-                Ok(n) => {
-                    let chunk = &buf[..n]; // bytes read
+    let stream_reader = EncryptedFileStream::new(file, encryptor, total_size, progress_sender);
 
-                    // encrypt chunk
-                    let encrypted = enc.encrypt_next(chunk).ok()?; // convert res to Option, end steam on err
-
-                    // Frame format for browser parsing
-                    let len = encrypted.len() as u32;
-                    let mut framed = len.to_be_bytes().to_vec(); // prefix len
-                    framed.extend_from_slice(&encrypted); // append encrypted data
-
-                    // update progress
-                    bytes_sent += n as u64;
-                    let progress = (bytes_sent as f64 / total_size) * 100.0;
-                    let _ = progress_sender.send(progress);
-
-                    // return (stream item, state for next)
-                    // Ok wraps body for Body::from_stream
-                    Some((
-                        Ok::<_, std::io::Error>(framed),
-                        (file, enc, buf, bytes_sent, total_size, progress_sender),
-                    ))
-                }
-
-                Err(e) => Some((
-                    Err(e),
-                    (file, enc, buf, bytes_sent, total_size, progress_sender),
-                )),
-            }
-        },
-    );
+    let stream = stream::unfold(stream_reader, |mut reader| async move {
+        reader
+            .read_next_chunk()
+            .await
+            .map(|result| (result, reader))
+    });
 
     println!("Starting stream");
     Ok(Response::builder()

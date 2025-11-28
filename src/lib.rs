@@ -5,4 +5,3 @@ pub mod server;
 pub mod session;
 pub mod tui;
 pub mod tunnel;
-pub mod types;
