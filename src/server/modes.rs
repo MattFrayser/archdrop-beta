@@ -12,8 +12,8 @@ pub struct Server {
     pub token: String,
     pub key: String,
     pub nonce: String,
-    pub file_name: String,
     pub progress_consumer: watch::Receiver<f64>,
+    pub file_name: String,
 }
 
 pub async fn start_https(server: Server, direction: ServerDirection) -> Result<u16> {

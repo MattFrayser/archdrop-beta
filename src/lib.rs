@@ -1,4 +1,5 @@
 pub mod crypto;
+pub mod manifest;
 pub mod output;
 pub mod qr;
 pub mod server;

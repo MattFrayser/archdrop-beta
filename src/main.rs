@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
-// Clap reads this struct and creates CLI
-#[derive(Parser)] // generates arg parsing code at compile time
+// Clap creates CLI w/ arg parsing
+#[derive(Parser)]
 #[command(name = "archdrop")] // name in --help
 #[command(about = "Secure file transfer")] // desc in --help
 struct Cli {
@@ -21,7 +21,7 @@ struct Cli {
 enum Commands {
     Send {
         #[arg(help = "Path to file to send")]
-        path: PathBuf, // PathBuf for typesafe paths
+        path: Vec<PathBuf>, // PathBuf for typesafe paths
 
         #[arg(long, help = "Use HTTPS with self-signed cert. (Faster)")]
         local: bool,
@@ -37,14 +37,34 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Reads std::env::args(), matches against struct def
+    // Read command args, match against struct def
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Send { path, local } => {
-            // PathBuf.exits(); Check for file before spinning up
-            // fail fast on no file
-            ensure!(path.exists(), "File not found: {}", path.display());
+            // collect all files
+            let mut files_to_send = Vec::new();
+
+            for path in paths {
+                // Check for file before spinning up
+                // fail fast on no file
+                ensure!(path.exists(), "File not found: {}", path.display());
+
+                if path.is_dir() {
+                    // Add files in dir recursively
+                    for entry in WalkDir::new(&path)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_file())
+                    {
+                        files_to_send.push(entry.path().to_path_buf());
+                    }
+                } else {
+                    files_to_send.push(path) // single file
+                }
+            }
+
+            ensure!(!files_to_send.is_empty(), "No files to send");
 
             // handle local flag
             let mode = if local {
@@ -53,23 +73,8 @@ async fn main() -> Result<()> {
                 ServerMode::Tunnel
             };
 
-            // Handle folder
-            let (file_to_send, cleanup_path) = if path.is_dir() {
-                let zip_path = create_zip_from_dir(&path)
-                    .context(format!("Failed to create archive from {}", path.display()))?;
-                (zip_path.clone(), Some(zip_path))
-            } else {
-                // singe file
-                (path, None)
-            };
-
             //  Start server with mode
-            server::start_server(file_to_send, mode, server::ServerDirection::Send).await?;
-
-            // cleanup temp zip
-            if let Some(temp_path) = cleanup_path {
-                let _ = tokio::fs::remove_file(temp_path).await;
-            }
+            server::start_server(files_to_send, mode, server::ServerDirection::Send).await?;
         }
         Commands::Receive { destination, local } => {
             // check dir location exits
@@ -100,60 +105,4 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn create_zip_from_dir(dir: &Path) -> Result<PathBuf> {
-    let dir_name = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("archive");
-
-    let temp_dir = std::env::temp_dir();
-    let zip_path = temp_dir.join(format!("{}.zip", dir_name));
-
-    let file = File::create(&zip_path).context(format!(
-        "Failed to create zip file at {}",
-        zip_path.display()
-    ))?;
-
-    let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-
-        let name = path
-            .strip_prefix(dir)
-            .context(format!("Invalid path in directory: {}", path.display()))?;
-
-        if path.is_file() {
-            zip.start_file(name.to_string_lossy().to_string(), options)
-                .context(format!("Failed to add {} to archive", name.display()))?;
-
-            // stream file
-            let mut file_reader =
-                File::open(path).context(format!("Failed to open file: {}", path.display()))?;
-
-            const CHUNK_SIZE: usize = 65536; // 64kb
-            let mut buffer = vec![0u8; CHUNK_SIZE];
-
-            loop {
-                let bytes_read = file_reader
-                    .read(&mut buffer)
-                    .context(format!("Failed to read from {}", path.display()))?;
-
-                // EOF
-                if bytes_read == 0 {
-                    break;
-                }
-                zip.write_all(&buffer[..bytes_read])
-                    .context(format!("Failed to write {} to archive", name.display()))?;
-            }
-        } else if !name.as_os_str().is_empty() {
-            zip.add_directory(name.to_string_lossy().to_string(), options)?;
-        }
-    }
-
-    zip.finish()?;
-    Ok(zip_path)
 }

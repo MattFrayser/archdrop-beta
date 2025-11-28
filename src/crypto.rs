@@ -10,8 +10,9 @@ use rand::{rngs::OsRng, RngCore};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
-
+//---------------------------------------
 // AES-256-GCM encryption key (32 bytes)
+//---------------------------------------
 #[derive(Debug, Clone)]
 pub struct EncryptionKey([u8; 32]);
 
@@ -29,6 +30,16 @@ impl EncryptionKey {
     pub fn to_base64(&self) -> String {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.0)
     }
+    pub fn from_base64(b64: &str) -> anyhow::Result<Self> {
+        use base64::{engine::general_purpose, Engine};
+        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64)?;
+        if bytes.len() != 32 {
+            anyhow::bail!("Invalid key length");
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        Ok(Self(key))
+    }
 }
 
 impl Default for EncryptionKey {
@@ -37,8 +48,10 @@ impl Default for EncryptionKey {
     }
 }
 
+//---------------------------------------------------------------------
 // 7-byte nonce base for AES-GCM stream encryption
 // Combined with a 4-byte counter and 1-byte flag to form 12-byte nonce
+//---------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct Nonce([u8; 7]);
 
@@ -59,6 +72,17 @@ impl Nonce {
     pub fn to_base64(&self) -> String {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.0)
     }
+
+    pub fn from_base64(b64: &str) -> anyhow::Result<Self> {
+        use base64::{engine::general_purpose, Engine};
+        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64)?;
+        if bytes.len() != 7 {
+            anyhow::bail!("Invalid nonce length");
+        }
+        let mut nonce = [0u8; 7];
+        nonce.copy_from_slice(&bytes);
+        Ok(Self(nonce))
+    }
 }
 
 impl Default for Nonce {
@@ -66,6 +90,9 @@ impl Default for Nonce {
         Self::new()
     }
 }
+//---------------------
+// Encryptor
+//--------------------
 
 pub struct Encryptor {
     // EncryptorBE32 adds 32-bit counter + 8-bit last-block flag
@@ -106,6 +133,10 @@ impl Encryptor {
 
     pub fn get_nonce_base64(&self) -> String {
         self.nonce.to_base64()
+    }
+
+    pub fn from_parts(key: EncryptionKey, nonce: Nonce) -> Self {
+        Self { key, nonce }
     }
 }
 

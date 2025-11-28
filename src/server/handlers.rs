@@ -1,5 +1,6 @@
-use crate::crypto::{EncryptedFileStream, Encryptor};
-use crate::session::SessionStore;
+use crate::crypto::{EncryptedFileStream, EncryptionKey, Encryptor, Nonce};
+use crate::manifest::Manifest;
+use crate::server::{ReceiveAppState, SendAppState};
 use axum::body::Body;
 use axum::extract::Query;
 use axum::extract::{Multipart, Path, State};
@@ -9,17 +10,8 @@ use futures::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_string_pretty, Value};
 use std::collections::HashSet;
-use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub sessions: SessionStore,
-    pub encryptor: Arc<Encryptor>, // Arc for thread-safe shared ownership
-    pub progress_sender: watch::Sender<f64>,
-}
 
 // converts any error to HTTP response
 pub struct AppError(anyhow::Error);
@@ -73,36 +65,30 @@ pub fn hash_path(path: &str) -> String {
 // SEND MODE
 //-------------------
 pub async fn send_handler(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
+    Path((token, file_index)): Path<(String, usize)>,
+    State(state): State<SendAppState>,
 ) -> Result<Response, AppError> {
     // validate token and get file path
-    let file_path = state
+    let file_entry = state
         .sessions
-        .validate_and_mark_used(&token)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("invalid or expired token"))?;
+        .get_file(file_index)
+        .ok_or_else(|| anyhow::anyhow!("invalid file index"))?;
 
-    // Extract filename
-    let filename = std::path::Path::new(&file_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download"); // default to generic 'download'
+    let session_key = EncryptionKey::from_base64(state.sessions.session_key())?;
+    let file_nonce = Nonce::from_base64(&file_entry.nonce)?;
+
+    let encryptor = Encryptor::from_parts(session_key, file_nonce);
 
     // open file asynchronously to not block thread
-    let file = File::open(&file_path).await?;
-
-    let encryptor = state.encryptor.create_stream_encryptor();
-
-    // clone progress for stream
-    let progress_sender = state.progress_sender.clone();
-
-    // file meta data for progress
-    let file_metadata = tokio::fs::metadata(&file_path).await?;
-    let total_size = file_metadata.len() as u64;
+    let file = File::open(&file_entry.full_path).await?;
 
     // Async Stream
-    let stream_reader = EncryptedFileStream::new(file, encryptor, total_size, progress_sender);
+    let stream_reader = EncryptedFileStream::new(
+        file,
+        encryptor.create_stream_encryptor(),
+        file_entry.size,
+        state.progress_sender.clone(),
+    );
 
     let stream = stream::unfold(stream_reader, |mut reader| async move {
         reader
@@ -115,7 +101,7 @@ pub async fn send_handler(
     Ok(Response::builder()
         .header(
             "Content-Disposition",
-            format!("attachment; filename=\"{}\"", filename),
+            format!("attachment; filename=\"{}\"", file_entry.name),
         )
         .body(Body::from_stream(stream))?)
 }
@@ -125,7 +111,7 @@ pub async fn send_handler(
 //-------------------
 pub async fn receive_handler(
     Path(token): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<ReceiveAppState>,
     mut multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
     // Check token is valid
@@ -179,7 +165,7 @@ pub async fn receive_handler(
     tokio::fs::create_dir_all(&chunk_dir).await?;
 
     // Decrypt chunk
-    let mut decryptor = state.encryptor.create_stream_decryptor();
+    let mut decryptor = Encryptor::create_stream_decryptor();
     let decrypted = decryptor
         .decrypt_next(chunk_data.as_slice())
         .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))?;
@@ -222,7 +208,7 @@ pub async fn receive_handler(
 pub async fn chunk_status(
     Path(token): Path<String>,
     Query(query): Query<StatusQuery>,
-    State(state): State<AppState>,
+    State(state): State<ReceiveAppState>,
 ) -> Result<axum::Json<Value>, AppError> {
     // Check token is valid
     if !state.sessions.is_valid(&token).await {
@@ -260,7 +246,7 @@ pub async fn chunk_status(
 // POST /upload/:token/finalize
 pub async fn finalize_upload(
     Path(token): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<ReceiveAppState>,
     mut multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
     // Parse relativePath from form
@@ -325,6 +311,25 @@ pub async fn finalize_upload(
     })))
 }
 
+//----------
+// HELPER
+//----------
+pub async fn serve_manifest(
+    Path(token): Path<String>,
+    State(state): State<SendAppState>,
+) -> Result<axum::Json<Manifest>, AppError> {
+    if !state.sessions.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid or expired token").into());
+    }
+
+    let manifest = state
+        .sessions
+        .get_manifest()
+        .ok_or_else(|| anyhow::anyhow!("No manifest for this session"))?
+        .clone();
+
+    Ok(axum::Json(manifest))
+}
 //--------------
 // Serve Web
 //--------------

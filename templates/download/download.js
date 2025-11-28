@@ -7,37 +7,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function startDownload() {
     try { 
-        const { key, nonceBase } = await getCredentialsFromUrl();
-        console.log("key imported")
-
-        // get token from url 
+        // Get session key form url  
+        const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
-        // Fetch encrypted stream from server
-        const response = await fetch(`/send/${token}/data`)
-        if (!response.ok) {
-            throw new Error(`Download failed: ${response.status}`)
+        // Fetch manifest
+        const manifestResponse = await fetch(`/send/${token}/manifest`)
+        if (!manifestResponse) {
+            throw new Error('Failed to fetch file list')
         }
-        console.log('Response status:', response.status);
 
-        // Parse filename from headers
-        let filename = 'download';
-        const contentDisposition = response.headers.get('Content-Disposition');
-        if (contentDisposition) {
-            const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
-            if (filenameMatch) {
-                filename = filenameMatch[1];
-            }
+        const manifest = await manifestResponse.json()
+
+        // Download each file
+        for (const fileEntry of manifest.files) {
+            await downloadSingleFile(token, fileEntry, key)
         }
-        console.log('Using filename:', filename); 
-
-        // Start streaming download
-        await streamDownload(response, filename, key, nonceBase)
 
     } catch(error) {
         console.error(error)
         alert(`Download failed: ${error.message}`)
     }
+}
+
+async function downloadSingleFile(token, fileEntry, sessionKey) {
+    // import nonce unique to file
+    const nonceBase = urlSafeBase64ToUint8Array(fileEntry.nonce)
+
+    // Fetch encrypted stream
+    const response = await fetch(`/send/${token}/${fileEntry.index}/data`)
+    if (!response.ok) {
+        throw new Error(`Download failed: ${response.status}`)
+    }
+
+    // Decrypt & save
+    await streamDownload(response, fileEntry.name, sessionKey, nonceBase)
+
 }
 
 async function streamDownload(response, filename, key, nonceBase) {
