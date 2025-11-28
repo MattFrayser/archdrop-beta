@@ -39,11 +39,15 @@ impl Session {
     }
 
     pub fn get_manifest(&self) -> Option<&Manifest> {
-        self.manifest.as_ref.map(|m| m.as_ref())
+        self.manifest.as_ref().map(|m| m.as_ref())
     }
 
     pub fn get_file(&self, index: usize) -> Option<&FileEntry> {
         self.get_manifest()?.files.get(index)
+    }
+
+    pub fn get_destination(&self) -> Option<&PathBuf> {
+        self.destination.as_ref()
     }
 
     pub fn session_key(&self) -> &str {
@@ -51,18 +55,16 @@ impl Session {
     }
 
     pub async fn validate_and_mark_used(&self, token: &str) -> Option<PathBuf> {
-        // Wrong token
-        if token != self.token {
-            return None;
-        }
-        //Already used
         let mut used = self.used.lock().await;
-        if *used {
+
+        // Wrong token
+        if token != self.token || *used {
             return None;
         }
 
         *used = true;
-        Some(self.file_path.clone())
+
+        self.destination.clone()
     }
 
     // check if token exists and is not used (read only)

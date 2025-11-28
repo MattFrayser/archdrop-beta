@@ -27,7 +27,7 @@ impl Manifest {
 
         // determine common base, no base, use parent
         let base =
-            base_path.unwrap_or_else(|| file_paths[0].parent().unwrap_or_else(Path::new("")));
+            base_path.unwrap_or_else(|| file_paths[0].parent().unwrap_or_else(|| Path::new("")));
 
         for (index, path) in file_paths.iter().enumerate() {
             let metadata = std::fs::metadata(path)?;

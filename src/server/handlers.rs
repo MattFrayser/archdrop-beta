@@ -44,6 +44,7 @@ pub struct ChunkMetadata {
     pub total_chunks: usize,
     pub file_size: u64,
     pub completed_chunks: HashSet<usize>,
+    pub nonce: String,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +127,7 @@ pub async fn receive_handler(
     let mut chunk_index = None;
     let mut total_chunks = None;
     let mut file_size = None;
+    let mut file_nonce_b64 = None;
 
     while let Some(field) = multipart.next_field().await? {
         match field.name() {
@@ -147,6 +149,9 @@ pub async fn receive_handler(
             Some("fileSize") => {
                 file_size = Some(field.text().await?.parse()?);
             }
+            Some("nonce") => {
+                file_nonce_b64 = Some(field.text().await?);
+            }
             _ => {}
         }
     }
@@ -164,16 +169,6 @@ pub async fn receive_handler(
     let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
     tokio::fs::create_dir_all(&chunk_dir).await?;
 
-    // Decrypt chunk
-    let mut decryptor = Encryptor::create_stream_decryptor();
-    let decrypted = decryptor
-        .decrypt_next(chunk_data.as_slice())
-        .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))?;
-
-    // Write chunk to disk
-    let chunk_path = format!("{}/{}.chunk", chunk_dir, chunk_index);
-    tokio::fs::write(&chunk_path, decrypted).await?;
-
     // Update metadata to track received chunks
     let metadata_path = format!("{}/metadata.json", chunk_dir);
 
@@ -182,14 +177,32 @@ pub async fn receive_handler(
         let json_string = tokio::fs::read_to_string(&metadata_path).await?;
         from_str(&json_string)?
     } else {
+        let nonce = file_nonce_b64
+            .ok_or_else(|| anyhow::anyhow!("Missing nonce on first chunk of file"))?;
         ChunkMetadata {
             relative_path: relative_path.clone(),
             file_name,
             total_chunks,
             file_size,
             completed_chunks: HashSet::new(),
+            nonce,
         }
     };
+
+    // Decrypt chunk
+    let session_key = EncryptionKey::from_base64(&state.session_key)?;
+    let file_nonce = Nonce::from_base64(&metadata.nonce)?;
+
+    let encryptor = Encryptor::from_parts(session_key, file_nonce);
+    let mut decryptor = encryptor.create_stream_decryptor();
+
+    let decrypted = decryptor
+        .decrypt_next(chunk_data.as_slice())
+        .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))?;
+
+    // Write chunk to disk
+    let chunk_path = format!("{}/{}.chunk", chunk_dir, chunk_index);
+    tokio::fs::write(&chunk_path, decrypted).await?;
 
     // mark chunk as received
     metadata.completed_chunks.insert(chunk_index);
@@ -262,9 +275,9 @@ pub async fn finalize_upload(
     // mark token as used
     let destination = state
         .sessions
-        .validate_and_mark_used(&token)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Invalid or expired token"))?;
+        .get_destination()
+        .ok_or_else(|| anyhow::anyhow!("No destionation for session"))?
+        .clone();
 
     let file_id = hash_path(&relative_path);
     let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
@@ -286,8 +299,22 @@ pub async fn finalize_upload(
 
     // Create destination with folder structure
     let dest_path = destination.join(&relative_path);
-    if let Some(parent) = dest_path.parent() {
+
+    // block path traversal
+    let canonical_dest = if dest_path.exists() {
+        dest_path.canonicalize()?
+    } else {
+        let parent = dest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: no parent"))?;
         tokio::fs::create_dir_all(parent).await?;
+        let canonical_parent = parent.canonicalize()?;
+        canonical_parent.join(dest_path.file_name().unwrap())
+    };
+
+    let canonical_base = destination.canonicalize()?;
+    if !canonical_dest.starts_with(&canonical_base) {
+        return Err(anyhow::anyhow!("Path traversal detected").into());
     }
 
     // Merge chunks into final file

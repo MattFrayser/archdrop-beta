@@ -97,7 +97,7 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
     let session_key_b64 = session_key.to_base64();
 
     // Create send session
-    let (sessions, token) = Session::new_send(destination.clone(), session_key_b64.clone());
+    let (sessions, token) = Session::new_receive(destination.clone(), session_key_b64.clone());
 
     // Progress channel
     let (progress_sender, progress_consumer) = watch::channel(0.0); // make progress channel

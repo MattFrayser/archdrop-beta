@@ -1,11 +1,11 @@
 use anyhow::{ensure, Context, Result};
-use archdrop::server::{self, ServerMode};
+use archdrop::{
+    manifest::Manifest,
+    server::{self, start_receive_server, start_send_server, ServerDirection, ServerMode},
+};
 use clap::{Parser, Subcommand};
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use walkdir::WalkDir;
-use zip::write::SimpleFileOptions;
 
 // Clap creates CLI w/ arg parsing
 #[derive(Parser)]
@@ -21,7 +21,7 @@ struct Cli {
 enum Commands {
     Send {
         #[arg(help = "Path to file to send")]
-        path: Vec<PathBuf>, // PathBuf for typesafe paths
+        paths: Vec<PathBuf>, // PathBuf for typesafe paths
 
         #[arg(long, help = "Use HTTPS with self-signed cert. (Faster)")]
         local: bool,
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Send { path, local } => {
+        Commands::Send { paths, local } => {
             // collect all files
             let mut files_to_send = Vec::new();
 
@@ -66,6 +66,8 @@ async fn main() -> Result<()> {
 
             ensure!(!files_to_send.is_empty(), "No files to send");
 
+            let manifest =
+                Manifest::new(files_to_send, None).context("Failed to create manifest")?;
             // handle local flag
             let mode = if local {
                 ServerMode::Local
@@ -74,7 +76,7 @@ async fn main() -> Result<()> {
             };
 
             //  Start server with mode
-            server::start_server(files_to_send, mode, server::ServerDirection::Send).await?;
+            start_send_server(manifest, mode).await?;
         }
         Commands::Receive { destination, local } => {
             // check dir location exits
@@ -99,7 +101,7 @@ async fn main() -> Result<()> {
             };
 
             //  Start server with mode
-            server::start_server(destination, mode, server::ServerDirection::Receive)
+            start_receive_server(destination, mode)
                 .await
                 .context("Failed to start file receiver")?;
         }

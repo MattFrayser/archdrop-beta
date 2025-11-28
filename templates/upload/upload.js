@@ -205,6 +205,11 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
         formData.append('chunkIndex', chunkIndex.toString());
         formData.append('totalChunks', totalChunks.toString());
         formData.append('fileSize', file.size.toString());
+
+        if (chunkIndex === 0) {
+            const nonceBase64 = arrayBufferToBase64(nonceBase);
+            formData.append('nonce', nonceBase64);
+        }
         
         // Upload chunk (with retry logic)
         await uploadChunk(token, formData, chunkIndex, relativePath);
