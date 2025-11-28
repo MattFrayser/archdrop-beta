@@ -63,7 +63,9 @@ pub async fn start_server(
         ServerDirection::Receive => Router::new()
             .route("/health", get(|| async { "OK" }))
             .route("/upload/:token", get(handlers::serve_upload_page))
-            .route("/upload/:token/file/:index", post(handlers::upload))
+            .route("/upload/:token/chunk", post(handlers::upload_chunk))
+            .route("/upload/:token/status", get(handlers::chunk_status))
+            .route("/upload/:token/finalize", post(handlers::finalize_upload))
             .route("/upload.js", get(handlers::serve_upload_js))
             .route("/crypto.js", get(handlers::serve_crypto_js))
             .with_state(state),

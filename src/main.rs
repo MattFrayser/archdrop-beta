@@ -2,7 +2,7 @@ use anyhow::{ensure, Context, Result};
 use archdrop::server::{self, ServerMode};
 use clap::{Parser, Subcommand};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
@@ -138,7 +138,7 @@ fn create_zip_from_dir(dir: &Path) -> Result<PathBuf> {
             let mut buffer = vec![0u8; CHUNK_SIZE];
 
             loop {
-                let bytes_read = file = file_render
+                let bytes_read = file_reader
                     .read(&mut buffer)
                     .context(format!("Failed to read from {}", path.display()))?;
 

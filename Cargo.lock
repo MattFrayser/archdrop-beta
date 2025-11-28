@@ -160,6 +160,8 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "serde",
+ "serde_json",
  "sha2",
  "sysinfo",
  "tokio",

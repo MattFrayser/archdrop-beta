@@ -3,7 +3,6 @@ use crate::session::SessionStore;
 use crate::types::{AppError, ChunkMetadata, StatusQuery, hash_path};
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::{Html, Response};
 use axum::Json;
 use futures::stream;
@@ -170,8 +169,10 @@ pub async fn upload_chunk(
     tokio::fs::create_dir_all(&chunk_dir).await?;
 
     // Decrypt chunk
-    let decryptor = state.encryptor.create_stream_decryptor();
-    let decrypted = decryptor.decrypt_next(&chunk_data)?;
+    let mut decryptor = state.encryptor.create_stream_decryptor();
+    let decrypted = decryptor
+        .decrypt_next(chunk_data.as_slice())
+        .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))?;
 
     // Write chunk to disk
     let chunk_path = format!("{}/{}.chunk", chunk_dir, chunk_index);

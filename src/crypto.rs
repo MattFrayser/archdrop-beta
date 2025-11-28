@@ -81,10 +81,11 @@ impl EncryptedFileStream {
         let chunk = &self.buffer[..n]; // bytes read
 
         // encrypt chunk
-        let encrypted = self.encrypt_next(chunk).ok()?;
+        let encrypted = self.encryptor.encrypt_next(chunk).ok()?;
 
         // Frame format for browser parsing
-        let mut framed = len.to_be_bytes(encrypted.len() as u32).to_vec(); // prefix len
+        let len = encrypted.len() as u32;
+        let mut framed = len.to_be_bytes().to_vec(); // prefix len
         framed.extend_from_slice(&encrypted); // append encrypted data
 
         // update progress

@@ -1,6 +1,5 @@
 use base64::{engine::general_purpose, Engine};
 use rand::{rngs::OsRng, RngCore};
-use uuid::Uuid;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
