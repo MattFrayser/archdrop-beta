@@ -54,16 +54,18 @@ pub async fn start_server(
         // Create axium router
         ServerDirection::Send => Router::new()
             .route("/health", get(|| async { "OK" }))
-            .route("/download/:token", get(handlers::serve_download_page))
-            .route("/download/:token/data", get(handlers::download_handler))
+            .route("/send/:token", get(handlers::serve_download_page))
+            .route("/send/:token/data", get(handlers::send_handler))
             .route("/download.js", get(handlers::serve_download_js))
             .route("/crypto.js", get(handlers::serve_crypto_js))
             .with_state(state),
 
         ServerDirection::Receive => Router::new()
             .route("/health", get(|| async { "OK" }))
-            .route("/upload/:token", get(handlers::serve_upload_page))
-            .route("/upload/:token/file/:index", post(handlers::upload))
+            .route("/receive/:token", get(handlers::serve_upload_page))
+            .route("/receive/:token/chunk", post(handlers::receive_handler))
+            .route("/receive/:token/status", post(handlers::chunk_status))
+            .route("/receive/:token/finalize", post(handlers::finalize_upload))
             .route("/upload.js", get(handlers::serve_upload_js))
             .route("/crypto.js", get(handlers::serve_crypto_js))
             .with_state(state),

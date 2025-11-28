@@ -5,47 +5,47 @@ const uploadBtn = document.getElementById('uploadBtn');
 let selectedFiles = [];
 
 // Click to upload
-uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('click', () => fileInput.click())
 
 // File selected
 fileInput.addEventListener('change', (e) => {
-    handleFiles(Array.from(e.target.files));
+    handleFiles(Array.from(e.target.files))
 });
 
 // Drag and drop
 uploadArea.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    uploadArea.classList.add('dragover');
+    e.preventDefault()
+    uploadArea.classList.add('dragover')
 });
 
 uploadArea.addEventListener('dragleave', () => {
-    uploadArea.classList.remove('dragover');
+    uploadArea.classList.remove('dragover')
 });
 
 uploadArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    uploadArea.classList.remove('dragover');
-    handleFiles(Array.from(e.dataTransfer.files));
+    e.preventDefault()
+    uploadArea.classList.remove('dragover')
+    handleFiles(Array.from(e.dataTransfer.files))
 });
 
 // Handle multiple files
 function handleFiles(files) {
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0) return
 
     // Add new files to existing selection
-    selectedFiles = [...selectedFiles, ...files];
+    selectedFiles = [...selectedFiles, ...files]
     
-    updateFileList();
+    updateFileList()
 }
 
 // Create file item element
 function createFileItem(file, index) {
-    const item = document.createElement('div');
-    item.className = 'file-item';
+    const item = document.createElement('div')
+    item.className = 'file-item'
 
     // File icon
-    const icon = document.createElement('div');
-    icon.className = 'file-icon';
+    const icon = document.createElement('div')
+    icon.className = 'file-icon'
     icon.innerHTML = `
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
             <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
@@ -54,169 +54,224 @@ function createFileItem(file, index) {
     `;
 
     // File details container
-    const details = document.createElement('div');
-    details.className = 'file-details';
+    const details = document.createElement('div')
+    details.className = 'file-details'
 
-    const name = document.createElement('div');
-    name.className = 'file-name';
-    name.textContent = file.name;
+    const name = document.createElement('div')
+    name.className = 'file-name'
+    name.textContent = file.name
 
-    const size = document.createElement('div');
-    size.className = 'file-size';
-    size.textContent = formatFileSize(file.size);
+    const size = document.createElement('div')
+    size.className = 'file-size'
+    size.textContent = formatFileSize(file.size)
 
-    details.appendChild(name);
-    details.appendChild(size);
+    details.appendChild(name)
+    details.appendChild(size)
 
     // Remove button
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'remove-file-btn';
-    removeBtn.type = 'button';
+    const removeBtn = document.createElement('button')
+    removeBtn.className = 'remove-file-btn'
+    removeBtn.type = 'button'
     removeBtn.innerHTML = `
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
     `;
-    removeBtn.addEventListener('click', () => removeFile(index));
+    removeBtn.addEventListener('click', () => removeFile(index))
 
-    item.appendChild(icon);
-    item.appendChild(details);
-    item.appendChild(removeBtn);
+    item.appendChild(icon)
+    item.appendChild(details)
+    item.appendChild(removeBtn)
 
     return item;
 }
 
 // Create summary element
 function createSummary(fileCount, totalSize) {
-    const summary = document.createElement('div');
-    summary.className = 'file-list-summary';
-    summary.textContent = `${fileCount} files selected • Total: ${formatFileSize(totalSize)}`;
-    return summary;
+    const summary = document.createElement('div')
+    summary.className = 'file-list-summary'
+    summary.textContent = `${fileCount} files selected • Total: ${formatFileSize(totalSize)}`
+    return summary
 }
 
 // Update the file list UI
 function updateFileList() {
     // Clear existing content
-    fileList.innerHTML = '';
+    fileList.innerHTML = ''
 
     if (selectedFiles.length === 0) {
-        fileList.classList.remove('show');
-        uploadBtn.classList.remove('show');
-        return;
+        fileList.classList.remove('show')
+        uploadBtn.classList.remove('show')
+        return
     }
 
-    fileList.classList.add('show');
-    uploadBtn.classList.add('show');
+    fileList.classList.add('show')
+    uploadBtn.classList.add('show')
 
     // Add each file
     selectedFiles.forEach((file, index) => {
-        const fileItem = createFileItem(file, index);
-        fileList.appendChild(fileItem);
-    });
+        const fileItem = createFileItem(file, index)
+        fileList.appendChild(fileItem)
+    })
 
     // Add summary if multiple files
     if (selectedFiles.length > 1) {
-        const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
-        const summary = createSummary(selectedFiles.length, totalSize);
-        fileList.appendChild(summary);
+        const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0)
+        const summary = createSummary(selectedFiles.length, totalSize)
+        fileList.appendChild(summary)
     }
 
     // Update button text
     uploadBtn.textContent = selectedFiles.length === 1 
         ? 'Upload File' 
-        : `Upload ${selectedFiles.length} Files`;
+        : `Upload ${selectedFiles.length} Files`
 }
 
 // Remove individual file
 function removeFile(index) {
-    selectedFiles.splice(index, 1);
+    selectedFiles.splice(index, 1)
     
     if (selectedFiles.length === 0) {
-        fileInput.value = '';
+        fileInput.value = ''
     }
     
-    updateFileList();
+    updateFileList()
 }
 
-// Upload files
+
 async function uploadFiles(selectedFiles) {
     if (selectedFiles.length === 0) {
-        alert('Please select files');
-        return;
+        alert('Please select files')
+        return
     }
 
-    const uploadBtn = document.getElementById('uploadBtn');
-    uploadBtn.disabled = true;
+    const uploadBtn = document.getElementById('uploadBtn')
+    uploadBtn.disabled = true
 
     try {
-        const { key, nonceBase } = await getCredentialsFromUrl();
-        const token = window.location.pathname.split('/').pop();
+        const { key, nonceBase } = await getCredentialsFromUrl()
+        const token = window.location.pathname.split('/').pop()
 
-        // Upload each file individually
         for (let i = 0; i < selectedFiles.length; i++) {
-            const file = selectedFiles[i];
-            
-            uploadBtn.textContent = `Uploading ${i + 1}/${selectedFiles.length}: ${file.name}`;
-            
-            await uploadSingleFile(file, token, key, nonceBase, i, selectedFiles.length);
+            const file = selectedFiles[i]
+            const relativePath = file.webkitRelativePath || file.name;
+            await uploadSingleFile(file, relativePath, token, key, nonceBase);
         }
 
-        uploadBtn.textContent = 'Upload Complete!';
-        setTimeout(() => {
-            uploadBtn.disabled = false;
-            uploadBtn.textContent = 'Upload';
-        }, 2000);
-
-    } catch (error) {
-        console.error('Upload error:', error);
-        alert(`Upload failed: ${error.message}`);
-        uploadBtn.disabled = false;
+        uploadBtn.textContent = 'Upload Complete!'
+    } catch {
+        alert(`Upload failed: ${error.message}`)
+        uploadBtn.disabled = false
     }
 }
 
-async function uploadSingleFile(file, token, key, nonceBase, index, total) {
-    // Read file in chunks for encryption
-    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
-    const encryptedChunks = [];
+async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
+    const CHUNK_SIZE = 256 * 1024;  // 256KB chunks 
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    
+    // Check what's already uploaded for resume support
+    const completedChunks = await getCompletedChunks(token, relativePath)
+    
+    console.log(`Uploading: ${relativePath} (${totalChunks} chunks, ${completedChunks.length} already done)`);
+
     let counter = 0;
 
-    // Encrypt in chunks
-    for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-        const chunk = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size));
-        const arrayBuffer = await chunk.arrayBuffer();
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        // Skip already uploaded chunks
+        if (completedChunks.includes(chunkIndex)) {
+            counter++;
+            continue;
+        }
         
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunkBlob = file.slice(start, end);
+        const chunkData = await chunkBlob.arrayBuffer();
+        
+        // Encrypt chunk
         const nonce = generateNonce(nonceBase, counter++);
         const encrypted = await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv: nonce },
             key,
-            arrayBuffer
+            chunkData
         );
         
-        encryptedChunks.push(createFrame(encrypted));
+        // Create FormData with chunk and metadata
+        const formData = new FormData();
+        formData.append('chunk', new Blob([encrypted]));
+        formData.append('relativePath', relativePath);
+        formData.append('fileName', file.name);
+        formData.append('chunkIndex', chunkIndex.toString());
+        formData.append('totalChunks', totalChunks.toString());
+        formData.append('fileSize', file.size.toString());
+        
+        // Upload chunk (with retry logic)
+        await uploadChunk(token, formData, chunkIndex, relativePath);
+
+        // Update progress UI
+        // updateProgress(relativePath, chunkIndex + 1, totalChunks);
     }
+    
+    // Finalize (merge chunks)
+    await finalizeFile(token, relativePath);
+}
 
-    // Create blob from encrypted chunks
-    const encryptedBlob = new Blob(encryptedChunks);
+async function getCompletedChunks(token, relativePath) {
+    try {
+        const url = `/receive/${token}/status?${new URLSearchParams({ relativePath })}`;
+        const response = await fetch(url);
 
-    // relative path for rebuilding
-    const relativePath = file.webkitRelativePath || file.name
+        if (!response.ok) return []
 
-    // Send via multipart
+        const data = await response.json()
+        return data.completed_chunks || []
+    
+    } catch {
+        return []
+    }
+}
+
+async function uploadChunk(token, formData, chunkIndex, relativePath, maxRetries = 3) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const response = await fetch(`/receive/${token}/chunk`, {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (response.ok) {
+                console.log(`Chunk ${chunkIndex} of ${relativePath} GOOD`);
+                return;
+            }
+            
+            throw new Error(`Upload failed: ${response.status}`);
+        } catch (e) {
+            if (attempt === maxRetries - 1) {
+                console.error(`Failed to upload chunk ${chunkIndex} of ${relativePath}:`, e);
+                throw e;
+            }
+            // Exponential backoff: 1s, 2s, 4s
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+            console.log(`Retrying chunk ${chunkIndex} (attempt ${attempt + 2}/${maxRetries})...`);
+        }
+    }
+}
+
+async function finalizeFile(token, relativePath) {
     const formData = new FormData();
-    formData.append('file', encryptedBlob, file.name);
-    formData.append('fileIndex', index);
-    formData.append('totalFiles', total);
-    formData.append('relativePath', relativePath)
-
-    const response = await fetch(`/upload/${token}/file/${index}`, {
+    formData.append('relativePath', relativePath);
+    
+    const response = await fetch(`/receive/${token}/finalize`, {
         method: 'POST',
         body: formData
     });
-
+    
     if (!response.ok) {
-        throw new Error(`Upload failed for ${file.name}: ${response.status}`);
+        throw new Error(`Failed to finalize ${relativePath}`);
     }
+    
+    console.log(`✓ Completed: ${relativePath}`);
 }
 
 function formatFileSize(bytes) {

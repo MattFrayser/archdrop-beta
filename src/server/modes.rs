@@ -56,8 +56,8 @@ pub async fn start_https(server: Server, direction: ServerDirection) -> Result<u
     output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     let service = match direction {
-        ServerDirection::Send => "download",
-        ServerDirection::Receive => "upload",
+        ServerDirection::Send => "send",
+        ServerDirection::Receive => "receive",
     };
 
     let url = format!(
@@ -127,8 +127,8 @@ pub async fn start_tunnel(server: Server, direction: ServerDirection) -> Result<
         .context("Failed to establish Cloudflare tunnel")?;
 
     let service = match direction {
-        ServerDirection::Send => "download",
-        ServerDirection::Receive => "upload",
+        ServerDirection::Send => "send",
+        ServerDirection::Receive => "receive",
     };
 
     let url = format!(

@@ -13,8 +13,8 @@ async function startDownload() {
         // get token from url 
         const token = window.location.pathname.split('/').pop()
 
-        // Fetch encrypted stream from server 
-        const response = await fetch(`/download/${token}/data`)
+        // Fetch encrypted stream from server
+        const response = await fetch(`/send/${token}/data`)
         if (!response.ok) {
             throw new Error(`Download failed: ${response.status}`)
         }
@@ -50,13 +50,17 @@ async function streamDownload(response, filename, key, nonceBase) {
             // append to buffer
             buffer = concatArrays(buffer, new Uint8Array(chunk))
 
-            while (buffer.length < 4) {
+            while (buffer.length >= 4) {
                 const view = new DataView(buffer.buffer, buffer.byteOffset, 4)
                 const frameLength = view.getInt32(0)
 
+                if (buffer.length < 4 + frameLength) {
+                    break
+                }
+
                 // wait for complete frame
                 const encryptedFrame = buffer.slice(4, 4 + frameLength)
-                buffer = slice(4 + frameLength)
+                buffer = buffer.slice(4 + frameLength)
 
                 // decrypt frame
                 try {
@@ -82,10 +86,6 @@ async function streamDownload(response, filename, key, nonceBase) {
 
     // download decrypted stream
     const blob = await new Response(decryptedStream).blob()
-
-    // reassemble complete file
-    const fileData = concatArrays(...chunks) 
-    console.log('Download complete:', fileData.length, 'bytes')
 
     // trigger Download
     const url = URL.createObjectURL(blob)

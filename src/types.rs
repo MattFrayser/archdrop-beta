@@ -1,6 +1,5 @@
 use base64::{engine::general_purpose, Engine};
 use rand::{rngs::OsRng, RngCore};
-use uuid::Uuid;
 
 // AES-256-GCM encryption key (32 bytes)
 #[derive(Debug, Clone)]
@@ -56,4 +55,32 @@ impl Default for Nonce {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Add to types.rs (just data structures)
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+
+#[derive(Serialize, Deserialize)]
+pub struct ChunkMetadata {
+    pub relative_path: String,
+    pub file_name: String,
+    pub total_chunks: usize,
+    pub file_size: u64,
+    pub completed_chunks: HashSet<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct StatusQuery {
+    #[serde(rename = "relativePath")]
+    pub relative_path: String,
+}
+
+// Helper: hash path for safe directory name
+pub fn hash_path(path: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }
