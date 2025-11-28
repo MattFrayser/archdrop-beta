@@ -1,59 +1,59 @@
 use crate::crypto::Encryptor;
 use crate::session::SessionStore;
+use crate::types::{AppError, ChunkMetadata, StatusQuery, hash_path};
 use axum::body::Body;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
+use axum::Json;
 use futures::stream;
+use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: SessionStore,
-    pub encryptor: Arc<Encryptor>, // Arc = thread-safe shared ownership
+    pub encryptor: Arc<Encryptor>,
     pub progress_sender: watch::Sender<f64>,
 }
+
+// ============================================================================
+// DOWNLOAD HANDLERS (Send mode)
+// ============================================================================
 
 pub async fn download_handler(
     Path(token): Path<String>,
     State(state): State<AppState>,
-) -> Result<Response, StatusCode> {
-    // validate token and get file path
+) -> Result<Response, AppError> {
+    // Validate token and get file path
     let file_path = state
         .sessions
         .validate_and_mark_used(&token)
         .await
-        .ok_or(StatusCode::FORBIDDEN)?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid or expired token"))?;
 
     // Extract filename
     let filename = std::path::Path::new(&file_path)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("download"); // default to generic 'download'
+        .unwrap_or("download");
 
-    // open file asynchronously to not block thread
-    let file = File::open(&file_path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?; // Error -> 500
+    // Open file asynchronously
+    let file = File::open(&file_path).await?;
 
     let encryptor = state.encryptor.create_stream_encryptor();
-
-    // clone progress for stream
     let progress_sender = state.progress_sender.clone();
 
-    // file meta data for progress
-    let file_metadata = tokio::fs::metadata(&file_path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?; // Error -> 500
+    // Get file size for progress tracking
+    let file_metadata = tokio::fs::metadata(&file_path).await?;
     let total_size = file_metadata.len() as f64;
     let bytes_sent = 0u64;
 
-    // Async Stream
-    // Create sream form state machine
-    // 4KB buffer initial
+    // Create async stream for chunked upload
     let stream = stream::unfold(
         (
             file,
@@ -64,36 +64,32 @@ pub async fn download_handler(
             progress_sender,
         ),
         |(mut file, mut enc, mut buf, mut bytes_sent, total_size, progress_sender)| async move {
-            //consume buffer
             match file.read(&mut buf).await {
                 Ok(0) => {
                     let _ = progress_sender.send(100.0);
                     None
                 }
                 Ok(n) => {
-                    let chunk = &buf[..n]; // bytes read
+                    let chunk = &buf[..n];
 
-                    // encrypt chunk
-                    let encrypted = enc.encrypt_next(chunk).ok()?; // convert res to Option, end steam on err
+                    // Encrypt chunk
+                    let encrypted = enc.encrypt_next(chunk).ok()?;
 
-                    // Frame format for browser parsing
+                    // Frame format: [4-byte length][encrypted data]
                     let len = encrypted.len() as u32;
-                    let mut framed = len.to_be_bytes().to_vec(); // prefix len
-                    framed.extend_from_slice(&encrypted); // append encrypted data
+                    let mut framed = len.to_be_bytes().to_vec();
+                    framed.extend_from_slice(&encrypted);
 
-                    // update progress
+                    // Update progress
                     bytes_sent += n as u64;
                     let progress = (bytes_sent as f64 / total_size) * 100.0;
                     let _ = progress_sender.send(progress);
 
-                    // return (stream item, state for next)
-                    // Ok wraps body for Body::from_stream
                     Some((
                         Ok::<_, std::io::Error>(framed),
                         (file, enc, buf, bytes_sent, total_size, progress_sender),
                     ))
                 }
-
                 Err(e) => Some((
                     Err(e),
                     (file, enc, buf, bytes_sent, total_size, progress_sender),
@@ -103,19 +99,17 @@ pub async fn download_handler(
     );
 
     println!("Starting stream");
-    Response::builder()
+    Ok(Response::builder()
         .header(
             "Content-Disposition",
             format!("attachment; filename=\"{}\"", filename),
         )
-        .body(Body::from_stream(stream))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .body(Body::from_stream(stream))?)
 }
 
-pub async fn serve_download_page() -> Result<Html<&'static str>, StatusCode> {
-    // return embedded html to brower
+pub async fn serve_download_page() -> Html<&'static str> {
     const HTML: &str = include_str!("../../templates/download/download.html");
-    Ok(Html(HTML))
+    Html(HTML)
 }
 
 pub async fn serve_download_js() -> Response {
@@ -126,115 +120,202 @@ pub async fn serve_download_js() -> Response {
         .unwrap()
 }
 
-pub async fn upload(
-    Path((token, file_index)): Path<(String, usize)>,
+// ============================================================================
+// UPLOAD HANDLERS (Receive mode) - Resumable Chunked Upload
+// ============================================================================
+
+/// POST /upload/:token/chunk
+/// Receives a single encrypted chunk, decrypts it, saves to temp storage
+pub async fn upload_chunk(
+    Path(token): Path<String>,
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> Result<Response, StatusCode> {
-    // Validate token
-    let dest_dir = state
-        .sessions
-        .validate_and_mark_used(&token)
-        .await
-        .ok_or(StatusCode::FORBIDDEN)?;
+) -> Result<Json<Value>, AppError> {
+    // Check token is valid (don't mark as used - need for all chunks)
+    if !state.sessions.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid or expired token").into());
+    }
 
-    let mut filename = String::new();
-    let mut relative_path = String::new();
-    let mut file_data = Vec::new();
-    let mut total_files = 1;
+    // Parse FormData fields
+    let mut chunk_data = None;
+    let mut relative_path = None;
+    let mut file_name = None;
+    let mut chunk_index = None;
+    let mut total_chunks = None;
+    let mut file_size = None;
 
-    // Parse multipart fields
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?
-    {
+    while let Some(field) = multipart.next_field().await? {
         match field.name() {
-            Some("file") => {
-                filename = field
-                    .file_name()
-                    .unwrap_or(&format!("file_{}", file_index))
-                    .to_string();
-                file_data = field
-                    .bytes()
-                    .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
-                    .to_vec();
-            }
-            Some("relativePath") => {
-                relative_path = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
-            }
-            Some("totalFiles") => {
-                let text = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
-                total_files = text.parse::<usize>().unwrap_or(1);
-            }
+            Some("chunk") => chunk_data = Some(field.bytes().await?.to_vec()),
+            Some("relativePath") => relative_path = Some(field.text().await?),
+            Some("fileName") => file_name = Some(field.text().await?),
+            Some("chunkIndex") => chunk_index = Some(field.text().await?.parse()?),
+            Some("totalChunks") => total_chunks = Some(field.text().await?.parse()?),
+            Some("fileSize") => file_size = Some(field.text().await?.parse()?),
             _ => {}
         }
     }
 
-    // Decrypt framed data
-    let mut decryptor = state.encryptor.create_stream_decryptor();
-    let mut buffer = file_data.as_slice();
-    let mut plaintext = Vec::new();
+    // Ensure all required fields present
+    let chunk_data = chunk_data.ok_or_else(|| anyhow::anyhow!("Missing chunk data"))?;
+    let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
+    let file_name = file_name.ok_or_else(|| anyhow::anyhow!("Missing fileName"))?;
+    let chunk_index = chunk_index.ok_or_else(|| anyhow::anyhow!("Missing chunkIndex"))?;
+    let total_chunks = total_chunks.ok_or_else(|| anyhow::anyhow!("Missing totalChunks"))?;
+    let file_size = file_size.ok_or_else(|| anyhow::anyhow!("Missing fileSize"))?;
 
-    // Parse and decrypt frames
-    while buffer.len() >= 4 {
-        let len = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+    // Create temp directory for this file's chunks
+    let file_id = hash_path(&relative_path);
+    let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
+    tokio::fs::create_dir_all(&chunk_dir).await?;
 
-        if buffer.len() < 4 + len {
-            break;
-        }
+    // Decrypt chunk
+    let decryptor = state.encryptor.create_stream_decryptor();
+    let decrypted = decryptor.decrypt_next(&chunk_data)?;
 
-        let encrypted_chunk = &buffer[4..4 + len];
-        let decrypted = decryptor.decrypt_next(encrypted_chunk).map_err(|e| {
-            eprintln!("Decryption failed: {:?}", e);
-            StatusCode::BAD_REQUEST
-        })?;
+    // Write chunk to disk
+    let chunk_path = format!("{}/{}.chunk", chunk_dir, chunk_index);
+    tokio::fs::write(&chunk_path, decrypted).await?;
 
-        plaintext.extend_from_slice(&decrypted);
-        buffer = &buffer[4 + len..];
-    }
-
-    // Determine file path (preserve directory structure)
-    let file_path = if !relative_path.is_empty() {
-        std::path::Path::new(&dest_dir).join(&relative_path)
+    // Update metadata (track which chunks received)
+    let metadata_path = format!("{}/metadata.json", chunk_dir);
+    let mut metadata: ChunkMetadata = if tokio::fs::metadata(&metadata_path).await.is_ok() {
+        let json_string = tokio::fs::read_to_string(&metadata_path).await?;
+        serde_json::from_str(&json_string)?
     } else {
-        std::path::Path::new(&dest_dir).join(&filename)
+        ChunkMetadata {
+            relative_path: relative_path.clone(),
+            file_name,
+            total_chunks,
+            file_size,
+            completed_chunks: HashSet::new(),
+        }
     };
 
-    // Create parent directories if needed
-    if let Some(parent) = file_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            eprintln!("Failed to create directory: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    }
+    metadata.completed_chunks.insert(chunk_index);
+    let json_string = serde_json::to_string_pretty(&metadata)?;
+    tokio::fs::write(&metadata_path, json_string).await?;
 
-    // Write file
-    tokio::fs::write(&file_path, plaintext).await.map_err(|e| {
-        eprintln!("Failed to write file: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    println!(
-        "Saved file {}/{}: {}",
-        file_index + 1,
-        total_files,
-        file_path.display()
-    );
-
-    let response_json = r#"{"success":true}"#;
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(Body::from(response_json))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Ok(Json(json!({
+        "success": true,
+        "chunk": chunk_index,
+        "completed": metadata.completed_chunks.len(),
+        "total": total_chunks
+    })))
 }
 
-pub async fn serve_upload_page() -> Result<Html<&'static str>, StatusCode> {
-    // return embedded html to brower
+/// GET /upload/:token/status?relativePath=...
+/// Returns which chunks are already uploaded (for resume capability)
+pub async fn chunk_status(
+    Path(token): Path<String>,
+    Query(query): Query<StatusQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    // Check token is valid
+    if !state.sessions.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid or expired token").into());
+    }
+
+    let file_id = hash_path(&query.relative_path);
+    let metadata_path = format!("/tmp/archdrop/{}/{}/metadata.json", token, file_id);
+
+    // If no metadata exists, nothing uploaded yet
+    if tokio::fs::metadata(&metadata_path).await.is_err() {
+        return Ok(Json(json!({
+            "completed_chunks": [],
+            "total_chunks": 0,
+            "relative_path": query.relative_path
+        })));
+    }
+
+    // Load metadata and return completed chunks
+    let json_string = tokio::fs::read_to_string(&metadata_path).await?;
+    let metadata: ChunkMetadata = serde_json::from_str(&json_string)?;
+
+    let mut completed: Vec<usize> = metadata.completed_chunks.into_iter().collect();
+    completed.sort();
+
+    Ok(Json(json!({
+        "completed_chunks": completed,
+        "total_chunks": metadata.total_chunks,
+        "relative_path": metadata.relative_path
+    })))
+}
+
+/// POST /upload/:token/finalize
+/// Merges all chunks into final file with proper folder structure
+pub async fn finalize_upload(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, AppError> {
+    // Parse relativePath from form
+    let mut relative_path = None;
+    while let Some(field) = multipart.next_field().await? {
+        if field.name() == Some("relativePath") {
+            relative_path = Some(field.text().await?);
+            break;
+        }
+    }
+    let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
+
+    // Mark token as used (upload completing)
+    let destination = state
+        .sessions
+        .validate_and_mark_used(&token)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Invalid or expired token"))?;
+
+    let file_id = hash_path(&relative_path);
+    let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
+    let metadata_path = format!("{}/metadata.json", chunk_dir);
+
+    // Load metadata
+    let json_string = tokio::fs::read_to_string(&metadata_path).await?;
+    let metadata: ChunkMetadata = serde_json::from_str(&json_string)?;
+
+    // Verify all chunks received
+    if metadata.completed_chunks.len() != metadata.total_chunks {
+        return Err(anyhow::anyhow!(
+            "Missing chunks: received {}, expected {}",
+            metadata.completed_chunks.len(),
+            metadata.total_chunks
+        )
+        .into());
+    }
+
+    // Create destination with folder structure
+    let dest_path = destination.join(&relative_path);
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    // Merge all chunks into final file
+    let mut output = tokio::fs::File::create(&dest_path).await?;
+
+    for i in 0..metadata.total_chunks {
+        let chunk_path = format!("{}/{}.chunk", chunk_dir, i);
+        let chunk_data = tokio::fs::read(&chunk_path).await?;
+        output.write_all(&chunk_data).await?;
+    }
+
+    output.flush().await?;
+
+    // Clean up temp files
+    tokio::fs::remove_dir_all(&chunk_dir).await.ok();
+
+    println!("Finalized: {}", dest_path.display());
+
+    Ok(Json(json!({
+        "success": true,
+        "path": relative_path,
+        "size": metadata.file_size
+    })))
+}
+
+pub async fn serve_upload_page() -> Html<&'static str> {
     const HTML: &str = include_str!("../../templates/upload/upload.html");
-    Ok(Html(HTML))
+    Html(HTML)
 }
 
 pub async fn serve_upload_js() -> Response {

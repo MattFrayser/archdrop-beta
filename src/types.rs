@@ -1,6 +1,59 @@
 use base64::{engine::general_purpose, Engine};
 use rand::{rngs::OsRng, RngCore};
 use uuid::Uuid;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+
+// Custom error type that auto-converts any error to HTTP response
+pub struct AppError(anyhow::Error);
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        // Log the actual error for debugging
+        eprintln!("Error: {:?}", self.0);
+
+        // Return 500 to client
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+}
+
+// Auto-convert any error type into AppError
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
+}
+
+// Metadata for tracking chunk uploads
+#[derive(Serialize, Deserialize)]
+pub struct ChunkMetadata {
+    pub relative_path: String,
+    pub file_name: String,
+    pub total_chunks: usize,
+    pub file_size: u64,
+    pub completed_chunks: HashSet<usize>,
+}
+
+// Query parameter for status endpoint
+#[derive(Deserialize)]
+pub struct StatusQuery {
+    #[serde(rename = "relativePath")]
+    pub relative_path: String,
+}
+
+// Helper: hash path for safe directory name
+pub fn hash_path(path: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
 
 // AES-256-GCM encryption key (32 bytes)
 #[derive(Debug, Clone)]
