@@ -1,4 +1,4 @@
-use crate::crypto::{EncryptionKey, Nonce};
+use crate::crypto::Nonce;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

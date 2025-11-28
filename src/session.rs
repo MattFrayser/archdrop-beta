@@ -54,17 +54,8 @@ impl Session {
         &self.session_key
     }
 
-    pub async fn validate_and_mark_used(&self, token: &str) -> Option<PathBuf> {
-        let mut used = self.used.lock().await;
-
-        // Wrong token
-        if token != self.token || *used {
-            return None;
-        }
-
-        *used = true;
-
-        self.destination.clone()
+    pub async fn mark_used(&self) {
+        *self.used.lock().await = true;
     }
 
     // check if token exists and is not used (read only)

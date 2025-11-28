@@ -1,4 +1,6 @@
-use crate::crypto::{EncryptedFileStream, EncryptionKey, Encryptor, Nonce};
+use crate::crypto::{
+    decrypt_chunk_at_position, EncryptedFileStream, EncryptionKey, Encryptor, Nonce,
+};
 use crate::manifest::Manifest;
 use crate::server::{ReceiveAppState, SendAppState};
 use axum::body::Body;
@@ -9,6 +11,7 @@ use axum::response::{Html, IntoResponse, Response};
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_string_pretty, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -35,8 +38,6 @@ where
     }
 }
 
-// Add to types.rs (just data structures)
-
 #[derive(Serialize, Deserialize)]
 pub struct ChunkMetadata {
     pub relative_path: String,
@@ -46,20 +47,20 @@ pub struct ChunkMetadata {
     pub completed_chunks: HashSet<usize>,
     pub nonce: String,
 }
+struct ChunkUpload {
+    data: Vec<u8>,
+    relative_path: String,
+    file_name: String,
+    chunk_index: usize,
+    total_chunks: usize,
+    file_size: u64,
+    nonce: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct StatusQuery {
     #[serde(rename = "relativePath")]
     pub relative_path: String,
-}
-
-// Helper: hash path for safe directory name
-pub fn hash_path(path: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
 }
 
 //-------------------
@@ -113,107 +114,31 @@ pub async fn send_handler(
 pub async fn receive_handler(
     Path(token): Path<String>,
     State(state): State<ReceiveAppState>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
     // Check token is valid
     if !state.sessions.is_valid(&token).await {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
-    // Parse form fields
-    let mut chunk_data = None;
-    let mut relative_path = None;
-    let mut file_name = None;
-    let mut chunk_index = None;
-    let mut total_chunks = None;
-    let mut file_size = None;
-    let mut file_nonce_b64 = None;
+    // Parse upload
+    let chunk = parse_chunk_upload(multipart).await?;
 
-    while let Some(field) = multipart.next_field().await? {
-        match field.name() {
-            Some("chunk") => {
-                chunk_data = Some(field.bytes().await?.to_vec());
-            }
-            Some("relativePath") => {
-                relative_path = Some(field.text().await?);
-            }
-            Some("fileName") => {
-                file_name = Some(field.text().await?);
-            }
-            Some("chunkIndex") => {
-                chunk_index = Some(field.text().await?.parse()?);
-            }
-            Some("totalChunks") => {
-                total_chunks = Some(field.text().await?.parse()?);
-            }
-            Some("fileSize") => {
-                file_size = Some(field.text().await?.parse()?);
-            }
-            Some("nonce") => {
-                file_nonce_b64 = Some(field.text().await?);
-            }
-            _ => {}
-        }
-    }
+    // Load or create metadata
+    let mut metadata = load_or_create_metadata(&token, &chunk).await?;
 
-    // Ensure all required fields
-    let chunk_data = chunk_data.ok_or(anyhow::anyhow!("Missing chunk"))?;
-    let relative_path = relative_path.ok_or(anyhow::anyhow!("Missing relativePath"))?;
-    let file_name = file_name.ok_or(anyhow::anyhow!("Missing fileName"))?;
-    let chunk_index = chunk_index.ok_or(anyhow::anyhow!("Missing chunkIndex"))?;
-    let total_chunks = total_chunks.ok_or(anyhow::anyhow!("Missing totalChunks"))?;
-    let file_size = file_size.ok_or(anyhow::anyhow!("Missing fileSize"))?;
+    // Save encrypted chunk (no decryption!)
+    let file_id = hash_path(&chunk.relative_path);
+    save_encrypted_chunk(&token, &file_id, chunk.chunk_index, &chunk.data).await?;
 
-    // Create temp dir for files chunks
-    let file_id = hash_path(&relative_path);
-    let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
-    tokio::fs::create_dir_all(&chunk_dir).await?;
-
-    // Update metadata to track received chunks
-    let metadata_path = format!("{}/metadata.json", chunk_dir);
-
-    // load metadata
-    let mut metadata: ChunkMetadata = if tokio::fs::metadata(&metadata_path).await.is_ok() {
-        let json_string = tokio::fs::read_to_string(&metadata_path).await?;
-        from_str(&json_string)?
-    } else {
-        let nonce = file_nonce_b64
-            .ok_or_else(|| anyhow::anyhow!("Missing nonce on first chunk of file"))?;
-        ChunkMetadata {
-            relative_path: relative_path.clone(),
-            file_name,
-            total_chunks,
-            file_size,
-            completed_chunks: HashSet::new(),
-            nonce,
-        }
-    };
-
-    // Decrypt chunk
-    let session_key = EncryptionKey::from_base64(&state.session_key)?;
-    let file_nonce = Nonce::from_base64(&metadata.nonce)?;
-
-    let encryptor = Encryptor::from_parts(session_key, file_nonce);
-    let mut decryptor = encryptor.create_stream_decryptor();
-
-    let decrypted = decryptor
-        .decrypt_next(chunk_data.as_slice())
-        .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))?;
-
-    // Write chunk to disk
-    let chunk_path = format!("{}/{}.chunk", chunk_dir, chunk_index);
-    tokio::fs::write(&chunk_path, decrypted).await?;
-
-    // mark chunk as received
-    metadata.completed_chunks.insert(chunk_index);
-    let json_string = to_string_pretty(&metadata)?;
-    tokio::fs::write(&metadata_path, json_string).await?;
+    // Update metadata
+    update_chunk_metadata(&token, &file_id, &mut metadata, chunk.chunk_index).await?;
 
     Ok(axum::Json(json!({
         "success": true,
-        "chunk": chunk_index,
+        "chunk": chunk.chunk_index,
         "completed": metadata.completed_chunks.len(),
-        "total": total_chunks
+        "total": metadata.total_chunks
     })))
 }
 
@@ -272,13 +197,18 @@ pub async fn finalize_upload(
     }
     let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
 
-    // mark token as used
+    if !state.sessions.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid token").into());
+    }
+
     let destination = state
         .sessions
         .get_destination()
-        .ok_or_else(|| anyhow::anyhow!("No destionation for session"))?
+        .ok_or_else(|| anyhow::anyhow!("No destination for session"))?
         .clone();
 
+    // mark session used on success
+    state.sessions.mark_used().await;
     let file_id = hash_path(&relative_path);
     let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
     let metadata_path = format!("{}/metadata.json", chunk_dir);
@@ -317,16 +247,29 @@ pub async fn finalize_upload(
         return Err(anyhow::anyhow!("Path traversal detected").into());
     }
 
-    // Merge chunks into final file
+    // Decrypt and Merge chunks into final file
     let mut output = tokio::fs::File::create(&dest_path).await?;
 
+    // Load encryption key and nonce
+    let session_key = EncryptionKey::from_base64(&state.session_key)?;
+    let file_nonce = Nonce::from_base64(&metadata.nonce)?;
+
+    // Merge and decrypt chunks sequentially
     for i in 0..metadata.total_chunks {
         let chunk_path = format!("{}/{}.chunk", chunk_dir, i);
-        let chunk_data = tokio::fs::read(&chunk_path).await?;
-        output.write_all(&chunk_data).await?;
-    }
+        let encrypted_chunk = tokio::fs::read(&chunk_path).await?;
 
-    output.flush().await?;
+        // Decrypt this chunk using its counter position
+        let decrypted = decrypt_chunk_at_position(
+            &session_key,
+            &file_nonce,
+            &encrypted_chunk,
+            i as u32, // Counter = chunk index
+        )?;
+
+        // Write decrypted data to final file
+        output.write_all(&decrypted).await?;
+    }
 
     // Cleanup temp files
     tokio::fs::remove_dir_all(&chunk_dir).await.ok();
@@ -341,6 +284,95 @@ pub async fn finalize_upload(
 //----------
 // HELPER
 //----------
+
+async fn parse_chunk_upload(mut multipart: Multipart) -> anyhow::Result<ChunkUpload> {
+    let mut chunk_data = None;
+    let mut relative_path = None;
+    let mut file_name = None;
+    let mut chunk_index = None;
+    let mut total_chunks = None;
+    let mut file_size = None;
+    let mut nonce = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("chunk") => chunk_data = Some(field.bytes().await?.to_vec()),
+            Some("relativePath") => relative_path = Some(field.text().await?),
+            Some("fileName") => file_name = Some(field.text().await?),
+            Some("chunkIndex") => chunk_index = Some(field.text().await?.parse()?),
+            Some("totalChunks") => total_chunks = Some(field.text().await?.parse()?),
+            Some("fileSize") => file_size = Some(field.text().await?.parse()?),
+            Some("nonce") => nonce = Some(field.text().await?),
+            _ => {}
+        }
+    }
+
+    Ok(ChunkUpload {
+        data: chunk_data.ok_or_else(|| anyhow::anyhow!("Missing chunk"))?,
+        relative_path: relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?,
+        file_name: file_name.ok_or_else(|| anyhow::anyhow!("Missing fileName"))?,
+        chunk_index: chunk_index.ok_or_else(|| anyhow::anyhow!("Missing chunkIndex"))?,
+        total_chunks: total_chunks.ok_or_else(|| anyhow::anyhow!("Missing totalChunks"))?,
+        file_size: file_size.ok_or_else(|| anyhow::anyhow!("Missing fileSize"))?,
+        nonce,
+    })
+}
+async fn load_or_create_metadata(
+    token: &str,
+    chunk: &ChunkUpload,
+) -> anyhow::Result<ChunkMetadata> {
+    let file_id = hash_path(&chunk.relative_path);
+    let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
+    tokio::fs::create_dir_all(&chunk_dir).await?;
+
+    let metadata_path = format!("{}/metadata.json", chunk_dir);
+
+    if tokio::fs::metadata(&metadata_path).await.is_ok() {
+        let json_string = tokio::fs::read_to_string(&metadata_path).await?;
+        Ok(serde_json::from_str(&json_string)?)
+    } else {
+        let nonce = chunk
+            .nonce
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing nonce on first chunk"))?
+            .clone();
+
+        Ok(ChunkMetadata {
+            relative_path: chunk.relative_path.clone(),
+            file_name: chunk.file_name.clone(),
+            total_chunks: chunk.total_chunks,
+            file_size: chunk.file_size,
+            completed_chunks: HashSet::new(),
+            nonce,
+        })
+    }
+}
+
+async fn save_encrypted_chunk(
+    token: &str,
+    file_id: &str,
+    chunk_index: usize,
+    encrypted_data: &[u8],
+) -> anyhow::Result<()> {
+    let chunk_path = format!("/tmp/archdrop/{}/{}/{}.chunk", token, file_id, chunk_index);
+    tokio::fs::write(&chunk_path, encrypted_data).await?;
+    Ok(())
+}
+async fn update_chunk_metadata(
+    token: &str,
+    file_id: &str,
+    metadata: &mut ChunkMetadata,
+    chunk_index: usize,
+) -> anyhow::Result<()> {
+    metadata.completed_chunks.insert(chunk_index);
+
+    let metadata_path = format!("/tmp/archdrop/{}/{}/metadata.json", token, file_id);
+    let json = serde_json::to_string_pretty(metadata)?;
+    tokio::fs::write(&metadata_path, json).await?;
+
+    Ok(())
+}
+
 pub async fn serve_manifest(
     Path(token): Path<String>,
     State(state): State<SendAppState>,
@@ -356,6 +388,15 @@ pub async fn serve_manifest(
         .clone();
 
     Ok(axum::Json(manifest))
+}
+// hash path for safe directory name
+pub fn hash_path(path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+
+    // Return first 16 chars (64 bits) for shorter directory names
+    // astronomically unlikely to collide
+    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 //--------------
 // Serve Web

@@ -11,6 +11,7 @@ use axum::{
 };
 use std::path::PathBuf;
 use tokio::sync::watch;
+use uuid::Uuid;
 
 pub enum ServerMode {
     Local,
@@ -36,31 +37,69 @@ pub struct ReceiveAppState {
     pub progress_sender: watch::Sender<f64>,
 }
 
+struct ServerConfig {
+    session_key: String,
+    token: String,
+    progress_sender: watch::Sender<f64>,
+    progress_receiver: watch::Receiver<f64>,
+    file_display_name: String,
+}
+
+fn create_server_config(file_display_name: String) -> ServerConfig {
+    let session_key = EncryptionKey::new();
+    let (progress_sender, progress_receiver) = watch::channel(0.0);
+
+    ServerConfig {
+        session_key: session_key.to_base64(),
+        token: Uuid::new_v4().to_string(),
+        progress_sender,
+        progress_receiver,
+        file_display_name,
+    }
+}
+
+async fn start_server(
+    app: Router,
+    token: String,
+    config: ServerConfig,
+    mode: ServerMode,
+    direction: ServerDirection,
+) -> Result<u16> {
+    let server = modes::Server {
+        app,
+        token,
+        key: config.session_key,
+        nonce: String::new(),
+        progress_consumer: config.progress_receiver,
+        file_name: config.file_display_name,
+    };
+
+    match mode {
+        ServerMode::Local => modes::start_https(server, direction).await,
+        ServerMode::Tunnel => modes::start_tunnel(server, direction).await,
+    }
+}
+
 //----------------
 // SEND SERVER
 //---------------
 pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u16> {
-    // One session key for transfer
-    let session_key = EncryptionKey::new();
-    let session_key_b64 = session_key.to_base64();
-
-    // Create send session
-    let (sessions, token) = Session::new_send(manifest.clone(), session_key_b64.clone());
-
-    // Progress channel
-    let (progress_sender, progress_consumer) = watch::channel(0.0); // make progress channel
-
     // TUI display name
-    let file_name = if manifest.files.len() == 1 {
+    let file_display_name = if manifest.files.len() == 1 {
         manifest.files[0].name.clone()
     } else {
         format!("{} files", manifest.files.len())
     };
 
+    let config = create_server_config(file_display_name);
+
+    // Send specific session
+    let (sessions, token) = Session::new_send(manifest.clone(), config.session_key.clone());
+
     let state = SendAppState {
         sessions,
-        session_key: session_key_b64.clone(),
-        progress_sender,
+        session_key: config.session_key.clone(),
+        progress_sender: config.progress_sender.clone(),
     };
 
     // Create axium router
@@ -73,46 +112,29 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
         .route("/crypto.js", get(handlers::serve_crypto_js))
         .with_state(state);
 
-    let server = modes::Server {
-        app,
-        token,
-        key: session_key_b64,
-        nonce: String::new(), // Not used with manifest, but keeps struct simple
-        progress_consumer,
-        file_name,
-    };
-
-    match mode {
-        ServerMode::Local => modes::start_https(server, ServerDirection::Send).await,
-        ServerMode::Tunnel => modes::start_tunnel(server, ServerDirection::Send).await,
-    }
+    start_server(app, token, config, mode, ServerDirection::Send).await
 }
 
 //----------------
 // RECEIVE SERVER
 //----------------
 pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Result<u16> {
-    // One session key for transfer
-    let session_key = EncryptionKey::new();
-    let session_key_b64 = session_key.to_base64();
-
-    // Create send session
-    let (sessions, token) = Session::new_receive(destination.clone(), session_key_b64.clone());
-
-    // Progress channel
-    let (progress_sender, progress_consumer) = watch::channel(0.0); // make progress channel
-
     // TUI display name
-    let file_name = destination
+    let file_display_name = destination
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(".")
         .to_string();
 
+    let config = create_server_config(file_display_name);
+
+    // Send specific session
+    let (sessions, token) = Session::new_receive(destination.clone(), config.session_key.clone());
+
     let state = ReceiveAppState {
         sessions,
-        session_key: session_key_b64.clone(),
-        progress_sender,
+        session_key: config.session_key.clone(),
+        progress_sender: config.progress_sender.clone(),
     };
 
     // Create axium router
@@ -126,17 +148,5 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .route("/crypto.js", get(handlers::serve_crypto_js))
         .with_state(state);
 
-    let server = modes::Server {
-        app,
-        token,
-        key: session_key_b64,
-        nonce: String::new(),
-        progress_consumer,
-        file_name,
-    };
-
-    match mode {
-        ServerMode::Local => modes::start_https(server, ServerDirection::Receive).await,
-        ServerMode::Tunnel => modes::start_tunnel(server, ServerDirection::Receive).await,
-    }
+    start_server(app, token, config, mode, ServerDirection::Receive).await
 }
