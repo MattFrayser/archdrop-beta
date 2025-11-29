@@ -39,10 +39,10 @@ pub async fn receive_handler(
     // Get or create session
     let file_id = hash_path(&chunk.relative_path);
 
-    // Lock receive session
-    let mut sessions = state.receive_sessions.write().await;
+    // Get or create session using DashMap (lock-free concurrent access)
+    let session_exists = state.receive_sessions.contains_key(&file_id);
 
-    let session = sessions.entry(file_id.clone()).or_insert_with(|| {
+    if !session_exists {
         let destination = state
             .session
             .get_destination()
@@ -51,23 +51,27 @@ pub async fn receive_handler(
         // calc path
         let dest_path = destination.join(&chunk.relative_path);
 
-        // create storage
-        let storage = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                ChunkStorage::new(chunk.file_size, dest_path)
-                    .await
-                    .expect("Failed to create chunk storage")
-            })
-        });
+        // create storage (now fully async, no blocking)
+        let storage = ChunkStorage::new(chunk.file_size, dest_path)
+            .await
+            .expect("Failed to create chunk storage");
 
-        ReceiveSession {
-            storage,
-            total_chunks: chunk.total_chunks,
-            nonce: chunk.nonce.clone().unwrap_or_default(),
-            relative_path: chunk.relative_path.clone(),
-            file_size: chunk.file_size,
-        }
-    });
+        state.receive_sessions.insert(
+            file_id.clone(),
+            ReceiveSession {
+                storage,
+                total_chunks: chunk.total_chunks,
+                nonce: chunk.nonce.clone().unwrap_or_default(),
+                relative_path: chunk.relative_path.clone(),
+                file_size: chunk.file_size,
+            },
+        );
+    }
+
+    let mut session = state
+        .receive_sessions
+        .get_mut(&file_id)
+        .expect("Session should exist");
 
     // Update nonce if provided (chunk 0 contains the nonce)
     if let Some(ref nonce_str) = chunk.nonce {
@@ -158,14 +162,11 @@ pub async fn finalize_upload(
 
     // Generate file ID and remove from sessions map
     let file_id = hash_path(&relative_path);
-    let mut sessions = state.receive_sessions.write().await;
 
-    let session = sessions
+    let (_key, session) = state
+        .receive_sessions
         .remove(&file_id)
         .ok_or_else(|| anyhow::anyhow!("No upload session found for file: {}", relative_path))?;
-
-    // Drop the lock early (session moved out, don't need lock anymore)
-    drop(sessions);
 
     // Verify all chunks received
     if session.storage.chunk_count() != session.total_chunks {

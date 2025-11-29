@@ -171,27 +171,30 @@ async function uploadFiles(selectedFiles) {
 }
 
 async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
-    const CHUNK_SIZE = 64 * 1024;  // 256KB chunks 
+    const CHUNK_SIZE = 1024 * 1024;  // 1MB chunks (increased from 64KB)
+    const MAX_CONCURRENT_UPLOADS = 8; // Parallel upload limit
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-    
+
     console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
 
-    let counter = 0;
+    // Prepare all chunk upload tasks
+    const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
 
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    // Process chunk upload
+    const processChunk = async (chunkIndex) => {
         const start = chunkIndex * CHUNK_SIZE
         const end = Math.min(start + CHUNK_SIZE, file.size)
         const chunkBlob = file.slice(start, end)
         const chunkData = await chunkBlob.arrayBuffer()
 
         // Encrypt chunk
-        const nonce = generateNonce(nonceBase, counter++);
+        const nonce = generateNonce(nonceBase, chunkIndex);
         const encrypted = await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv: nonce },
             key,
             chunkData
         );
-        
+
         // Create FormData with chunk and metadata
         const formData = new FormData();
         formData.append('chunk', new Blob([encrypted]));
@@ -205,14 +208,14 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
             const nonceBase64 = arrayBufferToBase64(nonceBase);
             formData.append('nonce', nonceBase64);
         }
-        
-        // Upload chunk 
-        await uploadChunk(token, formData, chunkIndex, relativePath);
 
-        // Update progress UI
-        // updateProgress(relativePath, chunkIndex + 1, totalChunks);
+        // Upload chunk
+        await uploadChunk(token, formData, chunkIndex, relativePath);
     }
-    
+
+    // Upload chunks in parallel with concurrency limit
+    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_UPLOADS)
+
     // Finalize (merge chunks)
     await finalizeFile(token, relativePath);
 }
@@ -280,5 +283,27 @@ function formatFileSize(bytes) {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+// Helper: Run async tasks with concurrency limit
+async function runWithConcurrency(items, asyncFn, concurrency) {
+    const results = []
+    const executing = []
+
+    for (const item of items) {
+        const promise = asyncFn(item).then(result => {
+            executing.splice(executing.indexOf(promise), 1)
+            return result
+        })
+
+        results.push(promise)
+        executing.push(promise)
+
+        if (executing.length >= concurrency) {
+            await Promise.race(executing)
+        }
+    }
+
+    return Promise.all(results)
 }
 

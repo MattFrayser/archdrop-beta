@@ -1,5 +1,6 @@
-const CHUNK_SIZE = 64 * 1024 // 64kb
+const CHUNK_SIZE = 1024 * 1024 // 1MB (increased from 64KB for better throughput)
 const MAX_MEMORY = 100 * 1024 * 1024 // 100MB
+const MAX_CONCURRENT_DOWNLOADS = 8 // Parallel chunk download limit
 document.addEventListener('DOMContentLoaded', () => {
     const downloadBtn = document.getElementById('downloadBtn');
     if (downloadBtn) {
@@ -52,29 +53,26 @@ async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) 
     const writable = await fileHandle.createWritable()
 
     try {
-        const decryptedChunks = []
+        // Store decrypted chunks in order for hash verification
+        const decryptedChunks = new Array(totalChunks)
 
-        for (let i = 0; i < totalChunks; i++) {
-            // download
-            const encrypted = await downloadChunk(token, fileEntry.index, i)
+        // Parallel chunk downloads with concurrency limit
+        await downloadChunksParallel(
+            token,
+            fileEntry.index,
+            totalChunks,
+            key,
+            nonceBase,
+            async (chunkIndex, decryptedData) => {
+                // Write to disk immediately
+                await writable.write(decryptedData)
+                // Store for hash verification
+                decryptedChunks[chunkIndex] = decryptedData
+            }
+        )
 
-            // decrypt
-            const nonce = generateNonce(nonceBase, i)
-            const decrypted = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: nonce },
-                key,
-                encrypted
-            )
-
-            const decryptedArray = new Uint8Array(decrypted)
-
-            // write to disk
-            await writable.write(decryptedArray)
-
-            decryptedChunks.push(decryptedArray)
-        }
         await writable.close()
-        // verify hash 
+        // verify hash
         const blob = new Blob(decryptedChunks)
         await verifyHash(blob, fileEntry)
 
@@ -85,20 +83,20 @@ async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) 
 }
 
 async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks) {
-    const decryptedChunks = []
+    // Store decrypted chunks in order
+    const decryptedChunks = new Array(totalChunks)
 
-    for (let i = 0; i < totalChunks; i++) {
-        const encrypted = await downloadChunk(token, fileEntry.index, i)
-
-        const nonce = generateNonce(nonceBase, i)
-        const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: nonce },
-            key,
-            encrypted
-        )
-
-        decryptedChunks.push(new Uint8Array(decrypted))
-    }
+    // Parallel chunk downloads with concurrency limit
+    await downloadChunksParallel(
+        token,
+        fileEntry.index,
+        totalChunks,
+        key,
+        nonceBase,
+        async (chunkIndex, decryptedData) => {
+            decryptedChunks[chunkIndex] = decryptedData
+        }
+    )
 
     const blob = new Blob(decryptedChunks)
     await verifyHash(blob, fileEntry)
@@ -112,6 +110,55 @@ async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks) 
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+}
+
+// Parallel chunk download with concurrency control
+async function downloadChunksParallel(token, fileIndex, totalChunks, key, nonceBase, onChunkReady) {
+    const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
+
+    // Process chunks with concurrency limit
+    const processChunk = async (chunkIndex) => {
+        // Download encrypted chunk
+        const encrypted = await downloadChunk(token, fileIndex, chunkIndex)
+
+        // Decrypt chunk
+        const nonce = generateNonce(nonceBase, chunkIndex)
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: nonce },
+            key,
+            encrypted
+        )
+
+        const decryptedData = new Uint8Array(decrypted)
+
+        // Call callback with chunk
+        await onChunkReady(chunkIndex, decryptedData)
+    }
+
+    // Run with concurrency limit
+    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_DOWNLOADS)
+}
+
+// Helper: Run async tasks with concurrency limit
+async function runWithConcurrency(items, asyncFn, concurrency) {
+    const results = []
+    const executing = []
+
+    for (const item of items) {
+        const promise = asyncFn(item).then(result => {
+            executing.splice(executing.indexOf(promise), 1)
+            return result
+        })
+
+        results.push(promise)
+        executing.push(promise)
+
+        if (executing.length >= concurrency) {
+            await Promise.race(executing)
+        }
+    }
+
+    return Promise.all(results)
 }
 
 async function verifyHash(blob, fileEntry) {
