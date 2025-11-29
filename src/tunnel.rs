@@ -1,11 +1,10 @@
+use crate::ui::output;
 use anyhow::{bail, ensure, Context, Result};
 use regex::Regex;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-
-use crate::output;
 
 pub struct CloudflareTunnel {
     process: Child,

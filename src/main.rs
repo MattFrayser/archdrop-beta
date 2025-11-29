@@ -1,7 +1,7 @@
 use anyhow::{ensure, Context, Result};
 use archdrop::{
-    manifest::Manifest,
-    server::{self, start_receive_server, start_send_server, ServerDirection, ServerMode},
+    server::{start_receive_server, start_send_server, ServerMode},
+    transfer::manifest::Manifest,
 };
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

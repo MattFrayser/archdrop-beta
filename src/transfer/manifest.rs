@@ -1,4 +1,3 @@
-use crate::crypto::Nonce;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -45,7 +44,7 @@ impl Manifest {
                 .to_string();
 
             // Unique nonce for each file
-            let nonce = Nonce::new();
+            let nonce = crate::crypto::Nonce::new();
 
             files.push(FileEntry {
                 index,

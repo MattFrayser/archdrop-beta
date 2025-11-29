@@ -1,9 +1,8 @@
 use archdrop::{
     crypto::{decrypt_chunk_at_position, EncryptionKey, Nonce},
     manifest::Manifest,
-    session::Session,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::fs;
 
@@ -62,8 +61,6 @@ async fn test_encryption_decryption_roundtrip() {
 }
 #[tokio::test]
 async fn test_chunked_upload_and_merge() {
-    use std::collections::HashSet;
-
     // Create test file with known content
     let original_data = b"This is a test file with multiple chunks of data that needs to be split and reassembled correctly!";
     let chunk_size = 20; // Small chunks for testing

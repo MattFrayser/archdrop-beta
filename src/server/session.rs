@@ -1,4 +1,4 @@
-use crate::manifest::{FileEntry, Manifest};
+use crate::transfer::manifest::{FileEntry, Manifest};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;

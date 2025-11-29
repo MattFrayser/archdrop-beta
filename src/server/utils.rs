@@ -1,4 +1,4 @@
-use crate::tui::TransferUI;
+use crate::ui::tui::TransferUI;
 use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use rcgen::generate_simple_self_signed;

@@ -1,22 +1,11 @@
 use super::utils;
-use crate::server::ServerDirection;
+use crate::server::state::{ServerDirection, ServerInstance};
 use crate::tunnel::CloudflareTunnel;
-use crate::{output, qr};
+use crate::ui::{output, qr};
 use anyhow::{Context, Result};
-use axum::Router;
 use std::net::SocketAddr;
-use tokio::sync::watch;
 
-pub struct Server {
-    pub app: Router,
-    pub token: String,
-    pub key: String,
-    pub nonce: String,
-    pub progress_consumer: watch::Receiver<f64>,
-    pub file_name: String,
-}
-
-pub async fn start_https(server: Server, direction: ServerDirection) -> Result<u16> {
+pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
     let spinner = output::spinner("Starting local HTTPS server...");
     // local Ip and Certs
     let local_ip = utils::get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
@@ -62,15 +51,15 @@ pub async fn start_https(server: Server, direction: ServerDirection) -> Result<u
 
     let url = format!(
         "https://{}:{}/{}/{}#key={}&nonce={}",
-        local_ip, port, service, server.token, server.key, server.nonce
+        local_ip, port, service, server.token, server.session_key, server.nonce
     );
     println!("{}", url);
 
     // Spawn TUI and get handle
     let qr_code = qr::generate_qr(&url)?;
     let tui_handle = utils::spawn_tui(
-        server.progress_consumer,
-        server.file_name,
+        server.progress_receiver,
+        server.display_name,
         qr_code,
         service == "upload",
     );
@@ -87,7 +76,7 @@ pub async fn start_https(server: Server, direction: ServerDirection) -> Result<u
     Ok(port)
 }
 
-pub async fn start_tunnel(server: Server, direction: ServerDirection) -> Result<u16> {
+pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
     // Start local HTTP
     let spinner = output::spinner("Starting local server...");
 
@@ -136,7 +125,7 @@ pub async fn start_tunnel(server: Server, direction: ServerDirection) -> Result<
         tunnel.url(),
         service,
         server.token,
-        server.key,
+        server.session_key,
         server.nonce
     );
     println!("{}", url);
@@ -144,8 +133,8 @@ pub async fn start_tunnel(server: Server, direction: ServerDirection) -> Result<
     // Spawn TUI and get handle
     let qr_code = qr::generate_qr(&url)?;
     let tui_handle = utils::spawn_tui(
-        server.progress_consumer,
-        server.file_name,
+        server.progress_receiver,
+        server.display_name,
         qr_code,
         service == "upload",
     );

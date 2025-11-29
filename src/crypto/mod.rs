@@ -1,7 +1,14 @@
-use base64::{engine::general_purpose, Engine};
-use rand::{rngs::OsRng, RngCore};
+pub mod decrypt;
+pub mod encrypt;
+pub mod stream;
 
+use base64::{engine::general_purpose, Engine};
+use rand::rngs::OsRng;
+use rand::RngCore;
+
+//---------------------------------------
 // AES-256-GCM encryption key (32 bytes)
+//---------------------------------------
 #[derive(Debug, Clone)]
 pub struct EncryptionKey([u8; 32]);
 
@@ -19,6 +26,16 @@ impl EncryptionKey {
     pub fn to_base64(&self) -> String {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.0)
     }
+    pub fn from_base64(b64: &str) -> anyhow::Result<Self> {
+        use base64::{engine::general_purpose, Engine};
+        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64)?;
+        if bytes.len() != 32 {
+            anyhow::bail!("Invalid key length");
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        Ok(Self(key))
+    }
 }
 
 impl Default for EncryptionKey {
@@ -27,8 +44,10 @@ impl Default for EncryptionKey {
     }
 }
 
+//---------------------------------------------------------------------
 // 7-byte nonce base for AES-GCM stream encryption
 // Combined with a 4-byte counter and 1-byte flag to form 12-byte nonce
+//---------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct Nonce([u8; 7]);
 
@@ -49,6 +68,17 @@ impl Nonce {
     pub fn to_base64(&self) -> String {
         general_purpose::URL_SAFE_NO_PAD.encode(&self.0)
     }
+
+    pub fn from_base64(b64: &str) -> anyhow::Result<Self> {
+        use base64::{engine::general_purpose, Engine};
+        let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64)?;
+        if bytes.len() != 7 {
+            anyhow::bail!("Invalid nonce length");
+        }
+        let mut nonce = [0u8; 7];
+        nonce.copy_from_slice(&bytes);
+        Ok(Self(nonce))
+    }
 }
 
 impl Default for Nonce {
@@ -56,5 +86,3 @@ impl Default for Nonce {
         Self::new()
     }
 }
-
-
