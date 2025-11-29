@@ -1,16 +1,103 @@
 const CHUNK_SIZE = 1024 * 1024 // 1MB (increased from 64KB for better throughput)
 const MAX_MEMORY = 100 * 1024 * 1024 // 100MB
 const MAX_CONCURRENT_DOWNLOADS = 8 // Parallel chunk download limit
-document.addEventListener('DOMContentLoaded', () => {
+
+document.addEventListener('DOMContentLoaded', async () => {
     const downloadBtn = document.getElementById('downloadBtn');
     if (downloadBtn) {
         downloadBtn.addEventListener('click', startDownload);
     }
-});
+
+    // Load manifest and display files
+    try {
+        const { key } = await getCredentialsFromUrl()
+        const token = window.location.pathname.split('/').pop()
+        const manifestResponse = await fetch(`/send/${token}/manifest`)
+        if (manifestResponse.ok) {
+            const manifest = await manifestResponse.json()
+            displayFileList(manifest.files)
+        }
+    } catch (error) {
+        console.error('Failed to load file list:', error)
+    }
+})
+
+function displayFileList(files) {
+    const fileList = document.getElementById('fileList')
+    if (!fileList || files.length === 0) return
+
+    fileList.classList.add('show')
+
+    files.forEach((file, index) => {
+        const item = createFileItem(file, index)
+        fileList.appendChild(item)
+    })
+}
+
+function createFileItem(file, index) {
+    const item = document.createElement('div')
+    item.className = 'file-item'
+    item.dataset.fileIndex = index
+
+    const icon = document.createElement('div')
+    icon.className = 'file-icon'
+    icon.innerHTML = `
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+            <polyline points="13 2 13 9 20 9"></polyline>
+        </svg>
+    `
+
+    const details = document.createElement('div')
+    details.className = 'file-details'
+
+    const name = document.createElement('div')
+    name.className = 'file-name'
+    name.textContent = file.name
+
+    const size = document.createElement('div')
+    size.className = 'file-size'
+    size.textContent = formatFileSize(file.size)
+
+    const progress = document.createElement('div')
+    progress.className = 'file-progress'
+    progress.innerHTML = `
+        <div class="progress-bar-container">
+            <div class="progress-bar"></div>
+        </div>
+        <div class="progress-text">Ready to download</div>
+    `
+
+    details.appendChild(name)
+    details.appendChild(size)
+    details.appendChild(progress)
+
+    item.appendChild(icon)
+    item.appendChild(details)
+
+    return item
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+}
 
 async function startDownload() {
-    try { 
-        // Get session key form url  
+    const fileList = document.getElementById('fileList')
+    const fileItems = fileList.querySelectorAll('.file-item')
+
+    // Show progress bars
+    fileItems.forEach(item => {
+        const progress = item.querySelector('.file-progress')
+        if (progress) progress.classList.add('show')
+    })
+
+    try {
+        // Get session key form url
         const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
@@ -23,9 +110,18 @@ async function startDownload() {
         const manifest = await manifestResponse.json()
 
         // Download each file
-        for (const fileEntry of manifest.files) {
-            await downloadSingleFile(token, fileEntry, key)
+        for (let i = 0; i < manifest.files.length; i++) {
+            const fileEntry = manifest.files[i]
+            const fileItem = fileItems[i]
+
+            fileItem.classList.add('downloading')
+            await downloadSingleFile(token, fileEntry, key, fileItem)
+            fileItem.classList.remove('downloading')
+            fileItem.classList.add('completed')
         }
+
+        const downloadBtn = document.getElementById('downloadBtn')
+        downloadBtn.textContent = 'Download Complete!'
 
     } catch(error) {
         console.error(error)
@@ -33,19 +129,19 @@ async function startDownload() {
     }
 }
 
-async function downloadSingleFile(token, fileEntry, sessionKey) {
+async function downloadSingleFile(token, fileEntry, sessionKey, fileItem) {
     const nonceBase = urlSafeBase64ToUint8Array(fileEntry.nonce)
     const totalChunks = Math.ceil(fileEntry.size / CHUNK_SIZE)
 
     // Large file -> Use File System Access API
     if (fileEntry.size > MAX_MEMORY && 'showSaveFilePicker' in window) {
-        await downloadLargeFile(token, fileEntry, sessionKey, nonceBase, totalChunks)
+        await downloadLargeFile(token, fileEntry, sessionKey, nonceBase, totalChunks, fileItem)
     } else {
-        await downloadSmallFile(token, fileEntry, sessionKey, nonceBase, totalChunks)
+        await downloadSmallFile(token, fileEntry, sessionKey, nonceBase, totalChunks, fileItem)
     }
 }
 
-async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) {
+async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
     const fileHandle = await window.showSaveFilePicker({
         suggestedName: fileEntry.name,
     });
@@ -55,6 +151,16 @@ async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) 
     try {
         // Store decrypted chunks in order for hash verification
         const decryptedChunks = new Array(totalChunks)
+
+        // Track progress
+        let completedChunks = 0
+        const updateProgress = () => {
+            const percent = Math.round((completedChunks / totalChunks) * 100)
+            const progressBar = fileItem.querySelector('.progress-bar')
+            const progressText = fileItem.querySelector('.progress-text')
+            if (progressBar) progressBar.style.width = `${percent}%`
+            if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
+        }
 
         // Parallel chunk downloads with concurrency limit
         await downloadChunksParallel(
@@ -68,6 +174,9 @@ async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) 
                 await writable.write(decryptedData)
                 // Store for hash verification
                 decryptedChunks[chunkIndex] = decryptedData
+                // Update progress
+                completedChunks++
+                updateProgress()
             }
         )
 
@@ -82,9 +191,19 @@ async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks) 
     }
 }
 
-async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks) {
+async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
     // Store decrypted chunks in order
     const decryptedChunks = new Array(totalChunks)
+
+    // Track progress
+    let completedChunks = 0
+    const updateProgress = () => {
+        const percent = Math.round((completedChunks / totalChunks) * 100)
+        const progressBar = fileItem.querySelector('.progress-bar')
+        const progressText = fileItem.querySelector('.progress-text')
+        if (progressBar) progressBar.style.width = `${percent}%`
+        if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
+    }
 
     // Parallel chunk downloads with concurrency limit
     await downloadChunksParallel(
@@ -95,6 +214,9 @@ async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks) 
         nonceBase,
         async (chunkIndex, decryptedData) => {
             decryptedChunks[chunkIndex] = decryptedData
+            // Update progress
+            completedChunks++
+            updateProgress()
         }
     )
 

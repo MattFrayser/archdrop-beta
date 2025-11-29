@@ -63,6 +63,130 @@
         line-height: 1.5;
     }
 
+    .file-list {
+        margin-top: 32px;
+        margin-bottom: 32px;
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 300px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 8px;
+    }
+
+    .file-list.show {
+        display: flex;
+    }
+
+    .file-list::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .file-list::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 4px;
+    }
+
+    .file-list::-webkit-scrollbar-thumb {
+        background: #cbd5e0;
+        border-radius: 4px;
+    }
+
+    .file-list::-webkit-scrollbar-thumb:hover {
+        background: #a0aec0;
+    }
+
+    .file-item {
+        padding: 16px;
+        background: #edf2f7;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+    }
+
+    .file-icon {
+        width: 40px;
+        height: 40px;
+        background: #5E827B;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .file-icon svg {
+        width: 20px;
+        height: 20px;
+        stroke: white;
+        fill: none;
+        stroke-width: 2;
+    }
+
+    .file-details {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .file-name {
+        color: #1a202c;
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+        word-break: break-all;
+    }
+
+    .file-size {
+        color: #718096;
+        font-size: 12px;
+    }
+
+    .file-progress {
+        margin-top: 8px;
+        display: none;
+    }
+
+    .file-progress.show {
+        display: block;
+    }
+
+    .progress-bar-container {
+        width: 100%;
+        height: 6px;
+        background: #e2e8f0;
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 4px;
+    }
+
+    .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #5E827B 0%, #4a6860 100%);
+        border-radius: 3px;
+        transition: width 0.3s ease;
+        width: 0%;
+    }
+
+    .progress-text {
+        font-size: 11px;
+        color: #718096;
+        text-align: left;
+    }
+
+    .file-item.downloading {
+        /* Downloading state */
+    }
+
+    .file-item.completed .file-icon {
+        background: #48bb78;
+    }
+
+    .file-item.error .file-icon {
+        background: #f56565;
+    }
 
     .download-btn {
         background: #020202;
@@ -126,7 +250,10 @@
             <div>
                 <h1> ArchDrop </h1>
                 <div class="subtitle">Your file is ready to download.</div>
-                <button id="downloadBtn" class="download-btn">Download File</button>
+
+                <div class="file-list" id="fileList"></div>
+
+                <button id="downloadBtn" class="download-btn">Download Files</button>
             </div>
             <div class="info">
                 <div class="info-item">

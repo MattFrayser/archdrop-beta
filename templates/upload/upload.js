@@ -65,8 +65,19 @@ function createFileItem(file, index) {
     size.className = 'file-size'
     size.textContent = formatFileSize(file.size)
 
+    // Progress bar (initially hidden)
+    const progress = document.createElement('div')
+    progress.className = 'file-progress'
+    progress.innerHTML = `
+        <div class="progress-bar-container">
+            <div class="progress-bar"></div>
+        </div>
+        <div class="progress-text">Waiting...</div>
+    `
+
     details.appendChild(name)
     details.appendChild(size)
+    details.appendChild(progress)
 
     // Remove button
     const removeBtn = document.createElement('button')
@@ -149,6 +160,13 @@ async function uploadFiles(selectedFiles) {
     const uploadBtn = document.getElementById('uploadBtn')
     uploadBtn.disabled = true
 
+    // Show progress bars for all files
+    const fileItems = fileList.querySelectorAll('.file-item')
+    fileItems.forEach(item => {
+        const progress = item.querySelector('.file-progress')
+        if (progress) progress.classList.add('show')
+    })
+
     try {
         const { key, nonceBase } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
@@ -156,7 +174,12 @@ async function uploadFiles(selectedFiles) {
         for (let i = 0; i < selectedFiles.length; i++) {
             const file = selectedFiles[i]
             const relativePath = file.webkitRelativePath || file.name;
-            await uploadSingleFile(file, relativePath, token, key, nonceBase);
+            const fileItem = fileItems[i]
+
+            fileItem.classList.add('uploading')
+            await uploadSingleFile(file, relativePath, token, key, nonceBase, fileItem);
+            fileItem.classList.remove('uploading')
+            fileItem.classList.add('completed')
         }
         const complete = await fetch(`/receive/${token}/complete`)
         if (!complete.ok) {
@@ -170,12 +193,24 @@ async function uploadFiles(selectedFiles) {
     }
 }
 
-async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
+async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileItem) {
     const CHUNK_SIZE = 1024 * 1024;  // 1MB chunks (increased from 64KB)
     const MAX_CONCURRENT_UPLOADS = 8; // Parallel upload limit
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
     console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
+
+    // Track completed chunks for progress
+    let completedChunks = 0
+
+    // Update progress UI
+    const updateProgress = () => {
+        const percent = Math.round((completedChunks / totalChunks) * 100)
+        const progressBar = fileItem.querySelector('.progress-bar')
+        const progressText = fileItem.querySelector('.progress-text')
+        if (progressBar) progressBar.style.width = `${percent}%`
+        if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
+    }
 
     // Prepare all chunk upload tasks
     const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
@@ -211,7 +246,14 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
 
         // Upload chunk
         await uploadChunk(token, formData, chunkIndex, relativePath);
+
+        // Update progress
+        completedChunks++
+        updateProgress()
     }
+
+    // Initialize progress UI
+    updateProgress()
 
     // Upload chunks in parallel with concurrency limit
     await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_UPLOADS)
