@@ -16,7 +16,7 @@ pub struct TransferUI {
     progress: watch::Receiver<f64>,
     file_name: String,
     qr_code: String,
-    is_recieving: bool,
+    is_receiving: bool,
 }
 
 impl TransferUI {
@@ -24,13 +24,13 @@ impl TransferUI {
         progress: watch::Receiver<f64>,
         file_name: String,
         qr_code: String,
-        is_recieving: bool,
+        is_receiving: bool,
     ) -> Self {
         Self {
             progress,
             file_name,
             qr_code,
-            is_recieving,
+            is_receiving,
         }
     }
 
@@ -190,7 +190,7 @@ impl TransferUI {
     // Widgets
     //------------
     fn render_file_widget(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let title = if self.is_recieving {
+        let title = if self.is_receiving {
             "Destination"
         } else {
             "Sending"

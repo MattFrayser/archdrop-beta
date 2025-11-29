@@ -262,21 +262,6 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileI
     await finalizeFile(token, relativePath);
 }
 
-async function getCompletedChunks(token, relativePath) {
-    try {
-        const url = `/receive/${token}/status?${new URLSearchParams({ relativePath })}`;
-        const response = await fetch(url);
-
-        if (!response.ok) return []
-
-        const data = await response.json()
-        return data.completed_chunks || []
-    
-    } catch (error) {
-        return []
-    }
-}
-
 async function uploadChunk(token, formData, chunkIndex, relativePath, maxRetries = 3) {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
@@ -315,37 +300,7 @@ async function finalizeFile(token, relativePath) {
     if (!response.ok) {
         throw new Error(`Failed to finalize ${relativePath}`);
     }
-    
+
     console.log(`✓ Completed: ${relativePath}`);
-}
-
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
-// Helper: Run async tasks with concurrency limit
-async function runWithConcurrency(items, asyncFn, concurrency) {
-    const results = []
-    const executing = []
-
-    for (const item of items) {
-        const promise = asyncFn(item).then(result => {
-            executing.splice(executing.indexOf(promise), 1)
-            return result
-        })
-
-        results.push(promise)
-        executing.push(promise)
-
-        if (executing.length >= concurrency) {
-            await Promise.race(executing)
-        }
-    }
-
-    return Promise.all(results)
 }
 

@@ -126,6 +126,10 @@ pub async fn receive_handler(
         }
     }
 
+    // Update progress for TUI
+    let progress = (session.storage.chunk_count() as f64 / session.total_chunks as f64) * 100.0;
+    let _ = state.progress_sender.send(progress);
+
     Ok(Json(json!({
         "success": true,
         "chunk": chunk.chunk_index,
@@ -215,6 +219,9 @@ pub async fn complete_transfer(
     State(state): State<AppState>,
 ) -> Result<axum::Json<Value>, AppError> {
     state.session.mark_used(&token).await;
+
+    // Set progress to 100% to signal completion and close TUI
+    let _ = state.progress_sender.send(100.0);
 
     Ok(Json(
         json!({"success": true, "message": "Transfer complete"}),

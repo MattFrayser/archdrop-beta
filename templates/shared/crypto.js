@@ -68,7 +68,7 @@ async function getCredentialsFromUrl() {
         throw new Error('Missing encryption key')
     }
 
-    // Clear url fragment immediatly after getti 
+    // Clear url fragment immediately after getting credentials
     // window.location.replace(window.location.href.split('#')[0])
 
     // base64 -> string -> byte array
@@ -84,42 +84,6 @@ async function getCredentialsFromUrl() {
     )
 
     return { key, nonceBase: nonceData }
-
-
-}
-
-// Create framed chunk [4 byte len][data]
-function createFrame(data) {
-    const dataArray = new Uint8Array(data)
-    const frame = new Uint8Array(4 + dataArray.length)
-    const view = new DataView(frame.buffer)
-
-    // write len as 4byte BE
-    view.setInt32(0, dataArray.length, false)
-
-    // Copy data 
-    frame.set(dataArray, 4)
-
-    return frame
-}
-
-function* parseFrames(buffer) {
-    while (buffer.length >= 4) {
-        // read prefix
-        const view = new DataView(buffer.buffer, buffer.byteOffset,  4)
-        const length = view.getUint32(0) // # encrpted bytes
-
-        if (buffer.length < 4 + length) {
-            break // dont have full chunk yet
-        }
-
-        const frame = buffer.slice(4, 4 + length)
-        remaining = buffer.slice(4 + length) // remove chunk
-
-        yield { frame, remaining }
-        buffer = remaining
-    }
-
 }
 
 async function calculateHash(data) {
@@ -127,4 +91,35 @@ async function calculateHash(data) {
     const hashArray = Array.from(new Uint8Array(hashBuffer))
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
     return hashHex
+}
+
+// Format file size in human-readable format
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+}
+
+// Run async tasks with concurrency limit
+async function runWithConcurrency(items, asyncFn, concurrency) {
+    const results = []
+    const executing = []
+
+    for (const item of items) {
+        const promise = asyncFn(item).then(result => {
+            executing.splice(executing.indexOf(promise), 1)
+            return result
+        })
+
+        results.push(promise)
+        executing.push(promise)
+
+        if (executing.length >= concurrency) {
+            await Promise.race(executing)
+        }
+    }
+
+    return Promise.all(results)
 }

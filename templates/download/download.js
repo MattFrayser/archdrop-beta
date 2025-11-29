@@ -78,14 +78,6 @@ function createFileItem(file, index) {
     return item
 }
 
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes'
-    const k = 1024
-    const sizes = ['Bytes', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
-}
-
 async function startDownload() {
     const fileList = document.getElementById('fileList')
     const fileItems = fileList.querySelectorAll('.file-item')
@@ -119,6 +111,9 @@ async function startDownload() {
             fileItem.classList.remove('downloading')
             fileItem.classList.add('completed')
         }
+
+        // Notify server that download is complete (for TUI progress)
+        await fetch(`/send/${token}/complete`, { method: 'POST' })
 
         const downloadBtn = document.getElementById('downloadBtn')
         downloadBtn.textContent = 'Download Complete!'
@@ -259,28 +254,6 @@ async function downloadChunksParallel(token, fileIndex, totalChunks, key, nonceB
 
     // Run with concurrency limit
     await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_DOWNLOADS)
-}
-
-// Helper: Run async tasks with concurrency limit
-async function runWithConcurrency(items, asyncFn, concurrency) {
-    const results = []
-    const executing = []
-
-    for (const item of items) {
-        const promise = asyncFn(item).then(result => {
-            executing.splice(executing.indexOf(promise), 1)
-            return result
-        })
-
-        results.push(promise)
-        executing.push(promise)
-
-        if (executing.length >= concurrency) {
-            await Promise.race(executing)
-        }
-    }
-
-    return Promise.all(results)
 }
 
 async function verifyHash(blob, fileEntry) {

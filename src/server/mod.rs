@@ -68,6 +68,7 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
             "/send/:token/:file_index/chunk/:chunk_index",
             get(send::send_handler),
         )
+        .route("/send/:token/complete", post(send::complete_download))
         .route("/send/:token", get(web::serve_download_page))
         .route("/download.js", get(web::serve_download_js))
         .route("/crypto.js", get(web::serve_crypto_js))

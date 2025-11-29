@@ -98,3 +98,22 @@ pub fn encrypt_chunk_at_position(
         .encrypt(nonce_array, plaintext)
         .map_err(|e| anyhow::anyhow!("Encryption failed: {:?}", e))
 }
+
+pub async fn complete_download(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    if !state.session.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid token").into());
+    }
+
+    state.session.mark_used(&token).await;
+
+    // Set progress to 100% to signal completion and close TUI
+    let _ = state.progress_sender.send(100.0);
+
+    Ok(axum::Json(serde_json::json!({
+        "success": true,
+        "message": "Download complete"
+    })))
+}
