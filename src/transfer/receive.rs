@@ -1,91 +1,140 @@
-use crate::crypto::{decrypt::decrypt_chunk_at_position, EncryptionKey, Nonce};
-use crate::server::state::AppState;
-use crate::transfer::{
-    chunk::{
-        load_or_create_metadata, parse_chunk_upload, save_encrypted_chunk,
-        update_chunk_metadata, ChunkMetadata,
-    },
-    util::{hash_path, AppError, StatusQuery},
-};
-use axum::extract::{Multipart, Path, Query, State};
-use serde_json::{from_str, json, Value};
-use tokio::io::AsyncWriteExt;
+use crate::crypto::{EncryptionKey, Nonce};
+use crate::server::state::{AppState, ReceiveSession};
+use crate::transfer::storage::ChunkStorage;
+use crate::transfer::util::{hash_path, AppError};
+use anyhow::Result;
+use axum::extract::{Multipart, Path, State};
+use axum::Json;
+use serde_json::{json, Value};
+use std::path::PathBuf;
 
 pub async fn receive_handler(
     Path(token): Path<String>,
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
+    eprintln!("[receive] Chunk upload request for token: {}", token);
+
     // Check token is valid
     if !state.session.is_valid(&token).await {
+        eprintln!("[receive] Invalid token: {}", token);
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
     // Parse upload
-    let chunk = parse_chunk_upload(multipart).await?;
+    let chunk = match parse_chunk_upload(multipart).await {
+        Ok(c) => {
+            eprintln!(
+                "[receive] Parsed chunk {} for file: {}",
+                c.chunk_index, c.relative_path
+            );
+            c
+        }
+        Err(e) => {
+            eprintln!("[receive] Failed to parse chunk upload: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    // Load or create metadata
-    let mut metadata = load_or_create_metadata(&token, &chunk).await?;
-
-    // Save encrypted chunk (no decryption!)
+    // Get or create session
     let file_id = hash_path(&chunk.relative_path);
-    save_encrypted_chunk(&token, &file_id, chunk.chunk_index, &chunk.data).await?;
 
-    // Update metadata
-    update_chunk_metadata(&token, &file_id, &mut metadata, chunk.chunk_index).await?;
+    // Lock receive session
+    let mut sessions = state.receive_sessions.write().await;
 
-    Ok(axum::Json(json!({
-        "success": true,
-        "chunk": chunk.chunk_index,
-        "completed": metadata.completed_chunks.len(),
-        "total": metadata.total_chunks
-    })))
-}
+    let session = sessions.entry(file_id.clone()).or_insert_with(|| {
+        let destination = state
+            .session
+            .get_destination()
+            .expect("No destination set for receive session")
+            .clone();
+        // calc path
+        let dest_path = destination.join(&chunk.relative_path);
 
-pub async fn chunk_status(
-    Path(token): Path<String>,
-    Query(query): Query<StatusQuery>,
-    State(state): State<AppState>,
-) -> Result<axum::Json<Value>, AppError> {
-    // Check token is valid
-    if !state.session.is_valid(&token).await {
-        return Err(anyhow::anyhow!("Invalid or expired token").into());
+        // create storage
+        let storage = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                ChunkStorage::new(chunk.file_size, dest_path)
+                    .await
+                    .expect("Failed to create chunk storage")
+            })
+        });
+
+        ReceiveSession {
+            storage,
+            total_chunks: chunk.total_chunks,
+            nonce: chunk.nonce.clone().unwrap_or_default(),
+            relative_path: chunk.relative_path.clone(),
+            file_size: chunk.file_size,
+        }
+    });
+
+    // Update nonce if provided (chunk 0 contains the nonce)
+    if let Some(ref nonce_str) = chunk.nonce {
+        if session.nonce.is_empty() {
+            eprintln!("[receive] Setting nonce from chunk {}", chunk.chunk_index);
+            session.nonce = nonce_str.clone();
+        }
     }
 
-    // get temp dir
-    let file_id = hash_path(&query.relative_path);
-    let metadata_path = format!("/tmp/archdrop/{}/{}/metadata.json", token, file_id);
-
-    // If no metadata, nothing uploaded yet
-    if tokio::fs::metadata(&metadata_path).await.is_err() {
+    // Check for duplicates
+    if session.storage.has_chunk(chunk.chunk_index) {
         return Ok(axum::Json(json!({
-            "completed_chunks": [],
-            "total_chunks": 0,
-            "relative_path": query.relative_path
+            "success": true,
+            "duplicate": true,
+            "chunk": chunk.chunk_index,
+            "received": session.storage.chunk_count(),
+            "total": session.total_chunks,
         })));
     }
 
-    // load metadata and return completed chunks
-    let data = tokio::fs::read_to_string(&metadata_path).await?;
-    let metadata: ChunkMetadata = from_str(&data)?;
+    // store chunk
+    let session_key = match EncryptionKey::from_base64(state.session.session_key()) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[receive] Failed to parse session key: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    // convert hashset to sorted Vec
-    let mut completed: Vec<usize> = metadata.completed_chunks.into_iter().collect();
-    completed.sort();
+    let nonce = match Nonce::from_base64(&session.nonce) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[receive] Failed to parse nonce: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    Ok(axum::Json(json!({
-        "completed_chunks": completed,
-        "total_chunks": metadata.total_chunks,
-        "relative_path": metadata.relative_path
+    match session
+        .storage
+        .store_chunk(chunk.chunk_index, chunk.data, &session_key, &nonce)
+        .await
+    {
+        Ok(_) => {
+            eprintln!("[receive] Successfully stored chunk {}", chunk.chunk_index);
+        }
+        Err(e) => {
+            eprintln!(
+                "[receive] Failed to store chunk {}: {:?}",
+                chunk.chunk_index, e
+            );
+            return Err(e.into());
+        }
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "chunk": chunk.chunk_index,
+        "total": session.total_chunks,
+        "received": session.storage.chunk_count()
     })))
 }
-
 pub async fn finalize_upload(
     Path(token): Path<String>,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
-    // Parse relativePath from form
+    // Parse relativePath
     let mut relative_path = None;
     while let Some(field) = multipart.next_field().await? {
         if field.name() == Some("relativePath") {
@@ -95,87 +144,157 @@ pub async fn finalize_upload(
     }
     let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
 
+    // Validate token
     if !state.session.is_valid(&token).await {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
+    // Get destination from session
     let destination = state
         .session
         .get_destination()
-        .ok_or_else(|| anyhow::anyhow!("No destination for session"))?
+        .ok_or_else(|| anyhow::anyhow!("No destination directory for this session"))?
         .clone();
 
-    // mark session used on success
-    state.session.mark_used().await;
-
+    // Generate file ID and remove from sessions map
     let file_id = hash_path(&relative_path);
-    let chunk_dir = format!("/tmp/archdrop/{}/{}", token, file_id);
-    let metadata_path = format!("{}/metadata.json", chunk_dir);
+    let mut sessions = state.receive_sessions.write().await;
 
-    // Load metadata
-    let json_string = tokio::fs::read_to_string(&metadata_path).await?;
-    let metadata: ChunkMetadata = from_str(&json_string)?;
+    let session = sessions
+        .remove(&file_id)
+        .ok_or_else(|| anyhow::anyhow!("No upload session found for file: {}", relative_path))?;
+
+    // Drop the lock early (session moved out, don't need lock anymore)
+    drop(sessions);
 
     // Verify all chunks received
-    if metadata.completed_chunks.len() != metadata.total_chunks {
+    if session.storage.chunk_count() != session.total_chunks {
         return Err(anyhow::anyhow!(
-            "Missing chunks: received {}, expected {}",
-            metadata.completed_chunks.len(),
-            metadata.total_chunks
+            "Incomplete upload: received {}/{} chunks for {}",
+            session.storage.chunk_count(),
+            session.total_chunks,
+            relative_path
         )
         .into());
     }
 
-    // Create destination with folder structure
+    // Calculate final destination path
     let dest_path = destination.join(&relative_path);
 
-    // block path traversal
-    let canonical_dest = if dest_path.exists() {
-        dest_path.canonicalize()?
-    } else {
-        let parent = dest_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid path: no parent"))?;
-        tokio::fs::create_dir_all(parent).await?;
-        let canonical_parent = parent.canonicalize()?;
-        canonical_parent.join(dest_path.file_name().unwrap())
-    };
+    // Validate path to prevent traversal attacks
+    let canonical_dest = validate_path(&dest_path, &destination)?;
 
-    let canonical_base = destination.canonicalize()?;
-    if !canonical_dest.starts_with(&canonical_base) {
-        return Err(anyhow::anyhow!("Path traversal detected").into());
-    }
+    // Get encryption parameters
+    let session_key = EncryptionKey::from_base64(state.session.session_key())?;
+    let file_nonce = Nonce::from_base64(&session.nonce)?;
 
-    // Decrypt and Merge chunks into final file
-    let mut output = tokio::fs::File::create(&dest_path).await?;
-
-    // Load encryption key and nonce
-    let session_key = EncryptionKey::from_base64(&state.session_key)?;
-    let file_nonce = Nonce::from_base64(&metadata.nonce)?;
-
-    // Merge and decrypt chunks sequentially
-    for i in 0..metadata.total_chunks {
-        let chunk_path = format!("{}/{}.chunk", chunk_dir, i);
-        let encrypted_chunk = tokio::fs::read(&chunk_path).await?;
-
-        // Decrypt this chunk using its counter position
-        let decrypted = decrypt_chunk_at_position(
+    // Finalize storage
+    // For Memory: decrypts all chunks and writes to disk
+    // For DirectWrite: file already written, just verifies and returns hash
+    let computed_hash = session
+        .storage
+        .finalize(
+            &canonical_dest,
             &session_key,
             &file_nonce,
-            &encrypted_chunk,
-            i as u32, // Counter = chunk index
-        )?;
-
-        // Write decrypted data to final file
-        output.write_all(&decrypted).await?;
-    }
-
-    // Cleanup temp files
-    tokio::fs::remove_dir_all(&chunk_dir).await.ok();
+            session.total_chunks,
+        )
+        .await?;
 
     Ok(axum::Json(json!({
         "success": true,
         "path": relative_path,
-        "size": metadata.file_size
+        "size": session.file_size,
+        "sha256": computed_hash,
     })))
+}
+
+pub async fn complete_transfer(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> Result<axum::Json<Value>, AppError> {
+    state.session.mark_used(&token).await;
+
+    Ok(Json(
+        json!({"success": true, "message": "Transfer complete"}),
+    ))
+}
+
+async fn parse_chunk_upload(mut multipart: Multipart) -> anyhow::Result<ChunkUpload> {
+    let mut chunk_data = None;
+    let mut relative_path = None;
+    let mut file_name = None;
+    let mut chunk_index = None;
+    let mut total_chunks = None;
+    let mut file_size = None;
+    let mut nonce = None;
+
+    while let Some(field) = multipart.next_field().await? {
+        match field.name() {
+            Some("chunk") => chunk_data = Some(field.bytes().await?.to_vec()),
+            Some("relativePath") => relative_path = Some(field.text().await?),
+            Some("fileName") => file_name = Some(field.text().await?),
+            Some("chunkIndex") => chunk_index = Some(field.text().await?.parse()?),
+            Some("totalChunks") => total_chunks = Some(field.text().await?.parse()?),
+            Some("fileSize") => file_size = Some(field.text().await?.parse()?),
+            Some("nonce") => nonce = Some(field.text().await?),
+            _ => {}
+        }
+    }
+
+    Ok(ChunkUpload {
+        data: chunk_data.ok_or_else(|| anyhow::anyhow!("Missing chunk"))?,
+        relative_path: relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?,
+        file_name: file_name.ok_or_else(|| anyhow::anyhow!("Missing fileName"))?,
+        chunk_index: chunk_index.ok_or_else(|| anyhow::anyhow!("Missing chunkIndex"))?,
+        total_chunks: total_chunks.ok_or_else(|| anyhow::anyhow!("Missing totalChunks"))?,
+        file_size: file_size.ok_or_else(|| anyhow::anyhow!("Missing fileSize"))?,
+        nonce,
+    })
+}
+
+fn validate_path(dest_path: &PathBuf, base: &PathBuf) -> anyhow::Result<PathBuf> {
+    let canonical_dest = if dest_path.exists() {
+        // Path exists, canonicalize directly
+        dest_path.canonicalize()?
+    } else {
+        // Path doesn't exist yet, canonicalize parent and append filename
+        let parent = dest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: no parent directory"))?;
+
+        // Create parent directories if needed
+        std::fs::create_dir_all(parent)?;
+
+        let canonical_parent = parent.canonicalize()?;
+        let file_name = dest_path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: no filename"))?;
+
+        canonical_parent.join(file_name)
+    };
+
+    // Canonicalize base path
+    let canonical_base = base.canonicalize()?;
+
+    // Security check: destination must be within base directory
+    if !canonical_dest.starts_with(&canonical_base) {
+        return Err(anyhow::anyhow!(
+            "Path traversal detected: {} is outside of {}",
+            canonical_dest.display(),
+            canonical_base.display()
+        ));
+    }
+
+    Ok(canonical_dest)
+}
+
+pub struct ChunkUpload {
+    pub data: Vec<u8>,
+    pub relative_path: String,
+    pub file_name: String,
+    pub chunk_index: usize,
+    pub total_chunks: usize,
+    pub file_size: u64,
+    pub nonce: Option<String>,
 }

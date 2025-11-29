@@ -89,8 +89,9 @@ impl CloudflareTunnel {
 
     async fn monitor_stderr(stream: BufReader<impl tokio::io::AsyncRead + Unpin>) {
         let mut lines = stream.lines();
-        while let Ok(Some(_)) = lines.next_line().await {
-            // Silently consume all output to keep tunnel alive
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Log all cloudflared output for debugging
+            eprintln!("[cloudflared] {}", line);
         }
     }
 
@@ -117,6 +118,10 @@ impl CloudflareTunnel {
 
 impl Drop for CloudflareTunnel {
     fn drop(&mut self) {
-        let _ = self.process.start_kill();
+        eprintln!("[tunnel] Shutting down cloudflared tunnel...");
+        // start_kill() is non-blocking and sends SIGKILL
+        if let Err(e) = self.process.start_kill() {
+            eprintln!("[tunnel] Failed to kill cloudflared process: {}", e);
+        }
     }
 }

@@ -66,8 +66,9 @@ async fn main() -> Result<()> {
 
             ensure!(!files_to_send.is_empty(), "No files to send");
 
-            let manifest =
-                Manifest::new(files_to_send, None).context("Failed to create manifest")?;
+            let manifest = Manifest::new(files_to_send, None)
+                .await
+                .context("Failed to create manifest")?;
             // handle local flag
             let mode = if local {
                 ServerMode::Local

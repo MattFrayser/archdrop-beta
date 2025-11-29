@@ -20,7 +20,7 @@ impl IntoResponse for AppError {
 // Auto-convert any error type into AppError
 impl<E> From<E> for AppError
 where
-    E: Into<anyhow::Error>,
+    E: Into<anyhow::Error> + Send + Sync,
 {
     fn from(err: E) -> Self {
         Self(err.into())

@@ -1,7 +1,12 @@
 
 function urlSafeBase64ToUint8Array(str) {
-    // conver base64 to be url safe
-    const base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+    // Convert URL-safe base64 to standard base64
+    let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+    
+    // Add padding if needed (Rust uses URL_SAFE_NO_PAD, so padding may be missing)
+    // Base64 padding: length mod 4 determines padding
+    const padLength = (4 - (base64.length % 4)) % 4
+    base64 += '='.repeat(padLength)
 
     const binaryString = atob(base64)
     const bytes = new Uint8Array(binaryString.length)
@@ -11,6 +16,21 @@ function urlSafeBase64ToUint8Array(str) {
     }
 
     return bytes
+}
+
+function arrayBufferToBase64(buffer) {
+    // Convert Uint8Array to base64 string
+    const bytes = new Uint8Array(buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i])
+    }
+    // Convert to URL-safe base64 (no padding) to match Rust's URL_SAFE_NO_PAD
+    const base64 = btoa(binary)
+        .replace(/\+/g, '-')  // Replace + with -
+        .replace(/\//g, '_')  // Replace / with _
+        .replace(/=+$/, '');  // Remove padding
+    return base64
 }
 
 // Construct nonce to match Rusts EncryptorBE32

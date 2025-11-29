@@ -1,33 +1,40 @@
+use std::{collections::HashMap, sync::Arc};
+
 use axum::Router;
-use tokio::sync::watch;
-use uuid::Uuid;
+use tokio::sync::{watch, RwLock};
 
-use crate::{crypto::EncryptionKey, server::session::Session};
-
-pub enum ServerMode {
-    Local,
-    Tunnel,
-}
-
-pub enum ServerDirection {
-    Send,
-    Receive,
-}
+use crate::{server::session::Session, transfer::storage::ChunkStorage};
 
 #[derive(Clone)]
 pub struct AppState {
     pub session: Session,
-    pub session_key: String,
     pub progress_sender: watch::Sender<f64>,
+    pub receive_sessions: Arc<RwLock<HashMap<String, ReceiveSession>>>,
 }
 impl AppState {
-    pub fn new(session: Session, session_key: String, progress_sender: watch::Sender<f64>) -> Self {
+    pub fn new_send(session: Session, progress_sender: watch::Sender<f64>) -> Self {
         Self {
             session,
-            session_key,
             progress_sender,
+            receive_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    pub fn new_receive(session: Session, progress_sender: watch::Sender<f64>) -> Self {
+        Self {
+            session,
+            progress_sender,
+            receive_sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+pub struct ReceiveSession {
+    pub storage: ChunkStorage,
+    pub total_chunks: usize,
+    pub nonce: String,
+    pub relative_path: String,
+    pub file_size: u64,
 }
 
 // Server config and runtime state
@@ -42,14 +49,20 @@ pub struct ServerInstance {
 }
 
 impl ServerInstance {
-    pub fn new(app: Router, display_name: String, nonce: String) -> Self {
-        let session_key = EncryptionKey::new();
-        let (progress_sender, progress_receiver) = watch::channel(0.0);
+    pub fn new(
+        app: Router,
+        display_name: String,
+        nonce: String,
+        token: String,
+        session_key: String,
+        progress_sender: watch::Sender<f64>,
+    ) -> Self {
+        let progress_receiver = progress_sender.subscribe();
 
         Self {
             app,
-            token: Uuid::new_v4().to_string(),
-            session_key: session_key.to_base64(),
+            token,
+            session_key,
             nonce,
             progress_sender,
             progress_receiver,

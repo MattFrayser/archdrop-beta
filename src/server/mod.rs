@@ -4,18 +4,26 @@ pub mod state;
 pub mod utils;
 pub mod web;
 
-pub use state::ServerMode;
-
 use crate::crypto::{EncryptionKey, Nonce};
 use crate::server::session::Session;
-use crate::server::state::{AppState, ServerDirection, ServerInstance};
-use crate::transfer::{chunk, manifest::Manifest, receive, send};
+use crate::server::state::{AppState, ServerInstance};
+use crate::transfer::{manifest::Manifest, receive, send};
 use anyhow::Result;
 use axum::{
     routing::{get, post},
     Router,
 };
 use std::path::PathBuf;
+
+pub enum ServerMode {
+    Local,
+    Tunnel,
+}
+
+pub enum ServerDirection {
+    Send,
+    Receive,
+}
 
 async fn start_server(
     server: state::ServerInstance,
@@ -46,26 +54,33 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     };
 
     // Send specific session
-    let (session, _token) = Session::new_send(manifest.clone(), session_key_b64.clone());
-
+    let (session, token) = Session::new_send(manifest.clone(), session_key_b64.clone());
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
-    let state = AppState {
-        session,
-        session_key: session_key_b64.clone(),
-        progress_sender: progress_sender.clone(),
-    };
+
+    let state = AppState::new_send(session, progress_sender.clone());
 
     // Create axium router
+    // Note: More specific routes must come before less specific ones
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
+        .route("/send/:token/manifest", get(send::manifest_handler))
+        .route(
+            "/send/:token/:file_index/chunk/:chunk_index",
+            get(send::send_handler),
+        )
         .route("/send/:token", get(web::serve_download_page))
-        .route("/send/:token/manifest", get(chunk::serve_manifest))
-        .route("/send/:token/:file_index/data", get(send::send_handler))
         .route("/download.js", get(web::serve_download_js))
         .route("/crypto.js", get(web::serve_crypto_js))
         .with_state(state);
 
-    let server = ServerInstance::new(app, display_name, nonce_b64);
+    let server = ServerInstance::new(
+        app,
+        display_name,
+        nonce_b64,
+        token,
+        session_key_b64,
+        progress_sender,
+    );
 
     start_server(server, mode, ServerDirection::Send).await
 }
@@ -88,27 +103,31 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .to_string();
 
     // Receive specific session
-    let (session, _token) = Session::new_receive(destination.clone(), session_key_b64.clone());
-
+    let (session, token) = Session::new_receive(destination.clone(), session_key_b64.clone());
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
-    let state = AppState {
-        session,
-        session_key: session_key_b64.clone(),
-        progress_sender: progress_sender.clone(),
-    };
+
+    let state = AppState::new_receive(session, progress_sender.clone());
 
     // Create axium router
+    // Note: More specific routes must come before less specific ones
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/receive/:token", get(web::serve_upload_page))
         .route("/receive/:token/chunk", post(receive::receive_handler))
-        .route("/receive/:token/status", post(receive::chunk_status))
         .route("/receive/:token/finalize", post(receive::finalize_upload))
+        .route("/receive/:token", get(web::serve_upload_page))
+        .route("/receive/:token/complete", post(receive::complete_transfer))
         .route("/upload.js", get(web::serve_upload_js))
         .route("/crypto.js", get(web::serve_crypto_js))
         .with_state(state);
 
-    let server = ServerInstance::new(app, display_name, nonce_b64);
+    let server = ServerInstance::new(
+        app,
+        display_name,
+        nonce_b64,
+        token,
+        session_key_b64,
+        progress_sender,
+    );
 
     start_server(server, mode, ServerDirection::Receive).await
 }

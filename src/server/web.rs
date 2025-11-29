@@ -1,10 +1,12 @@
 use axum::{
     body::Body,
+    extract::Path,
     http::{Response, StatusCode},
     response::Html,
 };
 
-pub async fn serve_upload_page() -> Result<Html<&'static str>, StatusCode> {
+pub async fn serve_upload_page(Path(token): Path<String>) -> Result<Html<&'static str>, StatusCode> {
+    eprintln!("[server] Serving upload page for token: {}", token);
     // return embedded html to brower
     const HTML: &str = include_str!("../../templates/upload/upload.html");
     Ok(Html(HTML))
@@ -18,7 +20,8 @@ pub async fn serve_upload_js() -> Response<Body> {
         .unwrap()
 }
 
-pub async fn serve_download_page() -> Result<Html<&'static str>, StatusCode> {
+pub async fn serve_download_page(Path(token): Path<String>) -> Result<Html<&'static str>, StatusCode> {
+    eprintln!("[server] Serving download page for token: {}", token);
     // return embedded html to brower
     const HTML: &str = include_str!("../../templates/download/download.html");
     Ok(Html(HTML))

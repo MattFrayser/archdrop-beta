@@ -158,37 +158,32 @@ async function uploadFiles(selectedFiles) {
             const relativePath = file.webkitRelativePath || file.name;
             await uploadSingleFile(file, relativePath, token, key, nonceBase);
         }
+        const complete = await fetch(`/receive/${token}/complete`)
+        if (!complete.ok) {
+            alert("Upload failed to complete")
+        }
 
         uploadBtn.textContent = 'Upload Complete!'
-    } catch {
+    } catch (error) {
         alert(`Upload failed: ${error.message}`)
         uploadBtn.disabled = false
     }
 }
 
 async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
-    const CHUNK_SIZE = 256 * 1024;  // 256KB chunks 
+    const CHUNK_SIZE = 64 * 1024;  // 256KB chunks 
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
     
-    // Check what's already uploaded for resume support
-    const completedChunks = await getCompletedChunks(token, relativePath)
-    
-    console.log(`Uploading: ${relativePath} (${totalChunks} chunks, ${completedChunks.length} already done)`);
+    console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
 
     let counter = 0;
 
     for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        // Skip already uploaded chunks
-        if (completedChunks.includes(chunkIndex)) {
-            counter++;
-            continue;
-        }
-        
-        const start = chunkIndex * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunkBlob = file.slice(start, end);
-        const chunkData = await chunkBlob.arrayBuffer();
-        
+        const start = chunkIndex * CHUNK_SIZE
+        const end = Math.min(start + CHUNK_SIZE, file.size)
+        const chunkBlob = file.slice(start, end)
+        const chunkData = await chunkBlob.arrayBuffer()
+
         // Encrypt chunk
         const nonce = generateNonce(nonceBase, counter++);
         const encrypted = await crypto.subtle.encrypt(
@@ -211,7 +206,7 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase) {
             formData.append('nonce', nonceBase64);
         }
         
-        // Upload chunk (with retry logic)
+        // Upload chunk 
         await uploadChunk(token, formData, chunkIndex, relativePath);
 
         // Update progress UI
@@ -232,7 +227,7 @@ async function getCompletedChunks(token, relativePath) {
         const data = await response.json()
         return data.completed_chunks || []
     
-    } catch {
+    } catch (error) {
         return []
     }
 }

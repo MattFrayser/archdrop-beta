@@ -54,8 +54,11 @@ impl Session {
         &self.session_key
     }
 
-    pub async fn mark_used(&self) {
-        *self.used.lock().await = true;
+    pub async fn mark_used(&self, token: &str) {
+        let mut used = self.used.lock().await;
+        if token == self.token && !*used {
+            *used = true;
+        }
     }
 
     // check if token exists and is not used (read only)
