@@ -1,6 +1,4 @@
 pub mod decrypt;
-pub mod encrypt;
-pub mod stream;
 
 use base64::{engine::general_purpose, Engine};
 use rand::rngs::OsRng;

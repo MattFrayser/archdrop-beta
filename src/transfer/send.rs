@@ -15,7 +15,7 @@ use axum::{
     Json,
 };
 use reqwest::header;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
 
 pub async fn manifest_handler(
     Path(token): Path<String>,
@@ -57,19 +57,22 @@ pub async fn send_handler(
         return Err(anyhow::anyhow!("Chunk index out of bounds").into());
     }
 
-    // Open & read to disk
-    let mut file = tokio::fs::File::open(&file_entry.full_path).await?;
-    file.seek(SeekFrom::Start(start)).await?;
+    // Open with buffered reading for better performance
+    let file = tokio::fs::File::open(&file_entry.full_path).await?;
+    let mut reader = BufReader::with_capacity(CHUNK_SIZE as usize * 2, file);
+    reader.seek(SeekFrom::Start(start)).await?;
 
     let chunk_len = (end - start) as usize;
     let mut buffer = vec![0u8; chunk_len];
-    file.read_exact(&mut buffer).await?;
+    reader.read_exact(&mut buffer).await?;
 
     let session_key = EncryptionKey::from_base64(state.session.session_key())?;
     let file_nonce = Nonce::from_base64(&file_entry.nonce)?;
 
-    let encrypted =
-        encrypt_chunk_at_position(&session_key, &file_nonce, &buffer, chunk_index as u32)?;
+    // Create cipher once per request
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(session_key.as_bytes()));
+
+    let encrypted = encrypt_chunk_at_position(&cipher, &file_nonce, &buffer, chunk_index as u32)?;
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -77,7 +80,7 @@ pub async fn send_handler(
 }
 
 pub fn encrypt_chunk_at_position(
-    key: &EncryptionKey,
+    cipher: &Aes256Gcm,
     nonce_base: &Nonce,
     plaintext: &[u8],
     counter: u32,
@@ -88,10 +91,28 @@ pub fn encrypt_chunk_at_position(
     full_nonce[..7].copy_from_slice(nonce_base.as_bytes());
     full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
 
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(key.as_bytes()));
     let nonce_array = GenericArray::from_slice(&full_nonce);
 
     cipher
         .encrypt(nonce_array, plaintext)
         .map_err(|e| anyhow::anyhow!("Encryption failed: {:?}", e))
+}
+
+pub async fn complete_download(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    if !state.session.is_valid(&token).await {
+        return Err(anyhow::anyhow!("Invalid token").into());
+    }
+
+    state.session.mark_used(&token).await;
+
+    // Set progress to 100% to signal completion and close TUI
+    let _ = state.progress_sender.send(100.0);
+
+    Ok(axum::Json(serde_json::json!({
+        "success": true,
+        "message": "Download complete"
+    })))
 }

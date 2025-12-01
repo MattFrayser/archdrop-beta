@@ -68,9 +68,11 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
             "/send/:token/:file_index/chunk/:chunk_index",
             get(send::send_handler),
         )
+        .route("/send/:token/complete", post(send::complete_download))
         .route("/send/:token", get(web::serve_download_page))
         .route("/download.js", get(web::serve_download_js))
-        .route("/crypto.js", get(web::serve_crypto_js))
+        .route("/styles.css", get(web::serve_shared_css))
+        .route("/shared.js", get(web::serve_shared_js))
         .with_state(state);
 
     let server = ServerInstance::new(
@@ -117,7 +119,8 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .route("/receive/:token", get(web::serve_upload_page))
         .route("/receive/:token/complete", post(receive::complete_transfer))
         .route("/upload.js", get(web::serve_upload_js))
-        .route("/crypto.js", get(web::serve_crypto_js))
+        .route("/styles.css", get(web::serve_shared_css))
+        .route("/shared.js", get(web::serve_shared_js))
         .with_state(state);
 
     let server = ServerInstance::new(

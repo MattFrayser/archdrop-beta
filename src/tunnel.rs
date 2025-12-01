@@ -1,10 +1,15 @@
 use crate::ui::output;
-use anyhow::{bail, ensure, Context, Result};
-use regex::Regex;
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::time::sleep;
+
+#[derive(Deserialize)]
+struct QuickTunnelResponse {
+    hostname: String,
+}
 
 pub struct CloudflareTunnel {
     process: Child,
@@ -13,20 +18,11 @@ pub struct CloudflareTunnel {
 
 impl CloudflareTunnel {
     pub async fn start(local_port: u16) -> Result<Self> {
-        // ui spinner
-        let spinner = output::spinner("Starting tunnel...");
-
-        spinner.set_message("Starting cloudflare tunnel...");
+        let spinner = output::spinner("Starting Cloudflare tunnel...");
         spinner.enable_steady_tick(Duration::from_millis(80));
 
-        // check cloudflared installed
-        ensure!(
-            Self::is_installed().await,
-            "cloudflared is not installed\n\
-             \n\
-             Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/\n\
-             Or use --local flag for HTTPS without tunnel"
-        );
+        let metrics_port = get_available_port()
+            .ok_or_else(|| anyhow::anyhow!("No free ports for tunnel metrics"))?;
 
         // spawn cloudflared process & capture output
         let mut child = Command::new("cloudflared")
@@ -34,32 +30,26 @@ impl CloudflareTunnel {
                 "tunnel",
                 "--url",
                 &format!("http://localhost:{}", local_port),
+                "--metrics",
+                &format!("localhost:{}", metrics_port),
                 "--no-autoupdate",
                 "--protocol",
                 "http2",
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .context("Failed to spawn cloudflared process")?;
 
-        let stderr = child
-            .stderr
-            .take()
-            .context("Failed to capture cloudflared output")?;
-
         // Parse stream with timeout
         // reader keeps stream alive after url
-        let (url, reader) = tokio::time::timeout(
-            tokio::time::Duration::from_secs(30),
-            Self::parse_stream(stderr),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Tunnel startup timed out after 30 seconds"))??;
-
-        tokio::spawn(async move {
-            Self::monitor_stderr(reader).await;
-        });
+        let url = match wait_for_url(metrics_port).await {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = child.start_kill();
+                bail!("Failed to obtain tunnel URL: {}", e);
+            }
+        };
 
         spinner.finish_with_message("Tunnel established");
 
@@ -69,59 +59,44 @@ impl CloudflareTunnel {
         })
     }
 
-    async fn parse_stream(
-        stream: impl tokio::io::AsyncRead + Unpin,
-    ) -> Result<(String, BufReader<impl tokio::io::AsyncRead + Unpin>)> {
-        let reader = BufReader::new(stream);
-        let mut lines = reader.lines();
-
-        while let Some(line) = lines.next_line().await? {
-            //println!("[cloudflared] {}", line); // Log all output
-            if line.contains("trycloudflare.com") {
-                if let Some(url) = Self::extract_url(&line) {
-                    // Return URL and the reader to continue monitoring
-                    return Ok((url, lines.into_inner()));
-                }
-            }
-        }
-        bail!("Tunnel started but no URL was found in cloudflared output");
-    }
-
-    async fn monitor_stderr(stream: BufReader<impl tokio::io::AsyncRead + Unpin>) {
-        let mut lines = stream.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            // Log all cloudflared output for debugging
-            eprintln!("[cloudflared] {}", line);
-        }
-    }
-
     pub fn url(&self) -> &str {
         &self.url
     }
+}
 
-    async fn is_installed() -> bool {
-        Command::new("which")
-            .arg("cloudflared")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .await // ← Add this
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+async fn wait_for_url(metrics_port: u16) -> Result<String> {
+    let client = reqwest::Client::new();
+    let api_url = format!("http://localhost:{}/quicktunnel", metrics_port);
+
+    for _ in 0..60 {
+        match client.get(&api_url).send().await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    let json: QuickTunnelResponse = res.json().await?;
+                    if !json.hostname.is_empty() {
+                        return Ok(format!("https://{}", json.hostname));
+                    }
+                }
+            }
+            Err(_) => {
+                // retry
+            }
+        }
+        sleep(Duration::from_millis(200)).await;
     }
 
-    fn extract_url(line: &str) -> Option<String> {
-        let re = Regex::new(r"https://[a-z0-9-]+\.trycloudflare\.com").ok()?;
-        re.find(line).map(|m| m.as_str().to_string())
-    }
+    bail!("Timed out waiting for tunnel metrics")
+}
+
+fn get_available_port() -> Option<u16> {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
 }
 
 impl Drop for CloudflareTunnel {
     fn drop(&mut self) {
-        eprintln!("[tunnel] Shutting down cloudflared tunnel...");
-        // start_kill() is non-blocking and sends SIGKILL
-        if let Err(e) = self.process.start_kill() {
-            eprintln!("[tunnel] Failed to kill cloudflared process: {}", e);
-        }
+        let _ = self.process.start_kill();
     }
 }

@@ -125,11 +125,7 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
     let tunnel_url = tunnel.url().trim_end_matches('/');
     let url = format!(
         "{}/{}/{}#key={}&nonce={}",
-        tunnel_url,
-        service,
-        server.token,
-        server.session_key,
-        server.nonce
+        tunnel_url, service, server.token, server.session_key, server.nonce
     );
     println!("{}", url);
 
@@ -151,10 +147,10 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
     // Graceful shutdown
     eprintln!("[server] Shutting down server and tunnel...");
     server_handle.shutdown();
-    
+
     // Drop tunnel explicitly to ensure cleanup
     drop(tunnel);
-    
+
     // Give a moment for cleanup
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 

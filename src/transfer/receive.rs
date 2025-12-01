@@ -6,7 +6,6 @@ use anyhow::Result;
 use axum::extract::{Multipart, Path, State};
 use axum::Json;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 
 pub async fn receive_handler(
     Path(token): Path<String>,
@@ -40,9 +39,9 @@ pub async fn receive_handler(
     let file_id = hash_path(&chunk.relative_path);
 
     // Lock receive session
-    let mut sessions = state.receive_sessions.write().await;
+    let session_exits = state.receive_sessions.contains_key(&file_id);
 
-    let session = sessions.entry(file_id.clone()).or_insert_with(|| {
+    if !session_exits {
         let destination = state
             .session
             .get_destination()
@@ -52,22 +51,26 @@ pub async fn receive_handler(
         let dest_path = destination.join(&chunk.relative_path);
 
         // create storage
-        let storage = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                ChunkStorage::new(chunk.file_size, dest_path)
-                    .await
-                    .expect("Failed to create chunk storage")
-            })
-        });
+        let storage = ChunkStorage::new(dest_path)
+            .await
+            .expect("Failed to create chunk storage");
 
-        ReceiveSession {
-            storage,
-            total_chunks: chunk.total_chunks,
-            nonce: chunk.nonce.clone().unwrap_or_default(),
-            relative_path: chunk.relative_path.clone(),
-            file_size: chunk.file_size,
-        }
-    });
+        state.receive_sessions.insert(
+            file_id.clone(),
+            ReceiveSession {
+                storage,
+                total_chunks: chunk.total_chunks,
+                nonce: chunk.nonce.clone().unwrap_or_default(),
+                relative_path: chunk.relative_path.clone(),
+                file_size: chunk.file_size,
+            },
+        );
+    }
+
+    let mut session = state
+        .receive_sessions
+        .get_mut(&file_id)
+        .expect("Session should exist");
 
     // Update nonce if provided (chunk 0 contains the nonce)
     if let Some(ref nonce_str) = chunk.nonce {
@@ -149,23 +152,13 @@ pub async fn finalize_upload(
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
-    // Get destination from session
-    let destination = state
-        .session
-        .get_destination()
-        .ok_or_else(|| anyhow::anyhow!("No destination directory for this session"))?
-        .clone();
-
     // Generate file ID and remove from sessions map
     let file_id = hash_path(&relative_path);
-    let mut sessions = state.receive_sessions.write().await;
 
-    let session = sessions
+    let (_key, session) = state
+        .receive_sessions
         .remove(&file_id)
         .ok_or_else(|| anyhow::anyhow!("No upload session found for file: {}", relative_path))?;
-
-    // Drop the lock early (session moved out, don't need lock anymore)
-    drop(sessions);
 
     // Verify all chunks received
     if session.storage.chunk_count() != session.total_chunks {
@@ -178,33 +171,11 @@ pub async fn finalize_upload(
         .into());
     }
 
-    // Calculate final destination path
-    let dest_path = destination.join(&relative_path);
-
-    // Validate path to prevent traversal attacks
-    let canonical_dest = validate_path(&dest_path, &destination)?;
-
-    // Get encryption parameters
-    let session_key = EncryptionKey::from_base64(state.session.session_key())?;
-    let file_nonce = Nonce::from_base64(&session.nonce)?;
-
     // Finalize storage
-    // For Memory: decrypts all chunks and writes to disk
-    // For DirectWrite: file already written, just verifies and returns hash
-    let computed_hash = session
-        .storage
-        .finalize(
-            &canonical_dest,
-            &session_key,
-            &file_nonce,
-            session.total_chunks,
-        )
-        .await?;
+    let computed_hash = session.storage.finalize().await?;
 
     Ok(axum::Json(json!({
         "success": true,
-        "path": relative_path,
-        "size": session.file_size,
         "sha256": computed_hash,
     })))
 }
@@ -214,6 +185,8 @@ pub async fn complete_transfer(
     State(state): State<AppState>,
 ) -> Result<axum::Json<Value>, AppError> {
     state.session.mark_used(&token).await;
+
+    let _ = state.progress_sender.send(100.0);
 
     Ok(Json(
         json!({"success": true, "message": "Transfer complete"}),
@@ -251,42 +224,6 @@ async fn parse_chunk_upload(mut multipart: Multipart) -> anyhow::Result<ChunkUpl
         file_size: file_size.ok_or_else(|| anyhow::anyhow!("Missing fileSize"))?,
         nonce,
     })
-}
-
-fn validate_path(dest_path: &PathBuf, base: &PathBuf) -> anyhow::Result<PathBuf> {
-    let canonical_dest = if dest_path.exists() {
-        // Path exists, canonicalize directly
-        dest_path.canonicalize()?
-    } else {
-        // Path doesn't exist yet, canonicalize parent and append filename
-        let parent = dest_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid path: no parent directory"))?;
-
-        // Create parent directories if needed
-        std::fs::create_dir_all(parent)?;
-
-        let canonical_parent = parent.canonicalize()?;
-        let file_name = dest_path
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid path: no filename"))?;
-
-        canonical_parent.join(file_name)
-    };
-
-    // Canonicalize base path
-    let canonical_base = base.canonicalize()?;
-
-    // Security check: destination must be within base directory
-    if !canonical_dest.starts_with(&canonical_base) {
-        return Err(anyhow::anyhow!(
-            "Path traversal detected: {} is outside of {}",
-            canonical_dest.display(),
-            canonical_base.display()
-        ));
-    }
-
-    Ok(canonical_dest)
 }
 
 pub struct ChunkUpload {

@@ -1,7 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use axum::Router;
-use tokio::sync::{watch, RwLock};
+use dashmap::DashMap;
+use tokio::sync::watch;
 
 use crate::{server::session::Session, transfer::storage::ChunkStorage};
 
@@ -9,14 +10,14 @@ use crate::{server::session::Session, transfer::storage::ChunkStorage};
 pub struct AppState {
     pub session: Session,
     pub progress_sender: watch::Sender<f64>,
-    pub receive_sessions: Arc<RwLock<HashMap<String, ReceiveSession>>>,
+    pub receive_sessions: Arc<DashMap<String, ReceiveSession>>,
 }
 impl AppState {
     pub fn new_send(session: Session, progress_sender: watch::Sender<f64>) -> Self {
         Self {
             session,
             progress_sender,
-            receive_sessions: Arc::new(RwLock::new(HashMap::new())),
+            receive_sessions: Arc::new(DashMap::new()),
         }
     }
 
@@ -24,7 +25,7 @@ impl AppState {
         Self {
             session,
             progress_sender,
-            receive_sessions: Arc::new(RwLock::new(HashMap::new())),
+            receive_sessions: Arc::new(DashMap::new()),
         }
     }
 }
