@@ -1,12 +1,12 @@
 use std::io::SeekFrom;
 
 use crate::config::CHUNK_SIZE;
-use crate::crypto::{EncryptionKey, Nonce};
+use crate::crypto::Nonce;
 use crate::server::state::AppState;
 use crate::transfer::manifest::Manifest;
 use crate::transfer::util::AppError;
 use aes_gcm::aead::{generic_array::GenericArray, Aead};
-use aes_gcm::{Aes256Gcm, KeyInit};
+use aes_gcm::Aes256Gcm;
 use anyhow::Result;
 use axum::{
     body::Body,
@@ -22,7 +22,7 @@ pub async fn manifest_handler(
     State(state): State<AppState>,
 ) -> Result<Json<Manifest>, AppError> {
     // Validate token
-    if !state.session.is_valid(&token).await {
+    if !state.session.claim(&token) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
@@ -40,7 +40,7 @@ pub async fn send_handler(
     State(state): State<AppState>,
 ) -> Result<Response<Body>, AppError> {
     // validate token and get file path
-    if !state.session.is_valid(&token).await {
+    if !state.session.is_active(&token) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
@@ -66,13 +66,10 @@ pub async fn send_handler(
     let mut buffer = vec![0u8; chunk_len];
     reader.read_exact(&mut buffer).await?;
 
-    let session_key = EncryptionKey::from_base64(state.session.session_key())?;
     let file_nonce = Nonce::from_base64(&file_entry.nonce)?;
+    let cipher = state.session.cipher();
 
-    // Create cipher once per request
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(session_key.as_bytes()));
-
-    let encrypted = encrypt_chunk_at_position(&cipher, &file_nonce, &buffer, chunk_index as u32)?;
+    let encrypted = encrypt_chunk_at_position(cipher, &file_nonce, &buffer, chunk_index as u32)?;
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -102,11 +99,11 @@ pub async fn complete_download(
     Path(token): Path<String>,
     State(state): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    if !state.session.is_valid(&token).await {
+    if !state.session.is_active(&token) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
-    state.session.mark_used(&token).await;
+    state.session.complete(&token);
 
     // Set progress to 100% to signal completion and close TUI
     let _ = state.progress_sender.send(100.0);

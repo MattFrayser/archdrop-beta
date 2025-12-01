@@ -51,7 +51,7 @@ impl CloudflareTunnel {
             }
         };
 
-        spinner.finish_with_message("Tunnel established");
+        output::spinner_success(&spinner, "Tunnel established");
 
         Ok(Self {
             process: child,

@@ -36,14 +36,12 @@ pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> 
         }
     });
 
-    spinner.set_message(format!("Waiting for server on port {}...", port));
-
     // Wait for server to be ready
     utils::wait_for_server_ready(port, 5, true)
         .await
         .context("Server failed to become ready")?;
 
-    output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
+    output::spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     let service = match direction {
         ServerDirection::Send => "send",
@@ -103,13 +101,11 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
         }
     });
 
-    spinner.set_message(format!("Waiting for server on port {}...", port));
-
     // Wait for server to be ready before starting tunnel
     utils::wait_for_server_ready(port, 5, false)
         .await
         .context("Server failed to become ready")?;
-    output::finish_spinner_success(&spinner, &format!("Server ready on port {}", port));
+    output::spinner_success(&spinner, &format!("Server ready on port {}", port));
 
     // Start tunnel
     let tunnel = CloudflareTunnel::start(port)
@@ -145,7 +141,6 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
     }
 
     // Graceful shutdown
-    eprintln!("[server] Shutting down server and tunnel...");
     server_handle.shutdown();
 
     // Drop tunnel explicitly to ensure cleanup

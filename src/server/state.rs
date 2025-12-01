@@ -38,6 +38,15 @@ pub struct ReceiveSession {
     pub file_size: u64,
 }
 
+pub struct ServerConfig {
+    pub app: Router,
+    pub display_name: String,
+    pub token: String,
+    pub session_key: String,
+    pub nonce: String,
+    pub progress_sender: watch::Sender<f64>,
+}
+
 // Server config and runtime state
 pub struct ServerInstance {
     pub app: Router,

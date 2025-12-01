@@ -1,8 +1,8 @@
 use crate::crypto::{EncryptionKey, Nonce};
 use crate::server::state::{AppState, ReceiveSession};
 use crate::transfer::storage::ChunkStorage;
-use crate::transfer::util::{hash_path, AppError};
-use anyhow::Result;
+use crate::transfer::util::{hash_path, validate_path, AppError};
+use anyhow::{Context, Result};
 use axum::extract::{Multipart, Path, State};
 use axum::Json;
 use serde_json::{json, Value};
@@ -12,28 +12,13 @@ pub async fn receive_handler(
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
-    eprintln!("[receive] Chunk upload request for token: {}", token);
-
     // Check token is valid
-    if !state.session.is_valid(&token).await {
-        eprintln!("[receive] Invalid token: {}", token);
+    if !state.session.claim(&token) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
     // Parse upload
-    let chunk = match parse_chunk_upload(multipart).await {
-        Ok(c) => {
-            eprintln!(
-                "[receive] Parsed chunk {} for file: {}",
-                c.chunk_index, c.relative_path
-            );
-            c
-        }
-        Err(e) => {
-            eprintln!("[receive] Failed to parse chunk upload: {:?}", e);
-            return Err(e.into());
-        }
-    };
+    let chunk = parse_chunk_upload(multipart).await?;
 
     // Get or create session
     let file_id = hash_path(&chunk.relative_path);
@@ -47,7 +32,9 @@ pub async fn receive_handler(
             .get_destination()
             .expect("No destination set for receive session")
             .clone();
-        // calc path
+
+        // Validate provided path and join to base
+        validate_path(&chunk.relative_path).context("Invalid file path")?;
         let dest_path = destination.join(&chunk.relative_path);
 
         // create storage
@@ -92,38 +79,14 @@ pub async fn receive_handler(
     }
 
     // store chunk
-    let session_key = match EncryptionKey::from_base64(state.session.session_key()) {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("[receive] Failed to parse session key: {:?}", e);
-            return Err(e.into());
-        }
-    };
+    let session_key = EncryptionKey::from_base64(state.session.session_key())?;
 
-    let nonce = match Nonce::from_base64(&session.nonce) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("[receive] Failed to parse nonce: {:?}", e);
-            return Err(e.into());
-        }
-    };
+    let nonce = Nonce::from_base64(&session.nonce)?;
 
-    match session
+    session
         .storage
         .store_chunk(chunk.chunk_index, chunk.data, &session_key, &nonce)
-        .await
-    {
-        Ok(_) => {
-            eprintln!("[receive] Successfully stored chunk {}", chunk.chunk_index);
-        }
-        Err(e) => {
-            eprintln!(
-                "[receive] Failed to store chunk {}: {:?}",
-                chunk.chunk_index, e
-            );
-            return Err(e.into());
-        }
-    }
+        .await?;
 
     Ok(Json(json!({
         "success": true,
@@ -148,7 +111,7 @@ pub async fn finalize_upload(
     let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
 
     // Validate token
-    if !state.session.is_valid(&token).await {
+    if !state.session.is_active(&token) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
@@ -184,7 +147,7 @@ pub async fn complete_transfer(
     Path(token): Path<String>,
     State(state): State<AppState>,
 ) -> Result<axum::Json<Value>, AppError> {
-    state.session.mark_used(&token).await;
+    state.session.complete(&token);
 
     let _ = state.progress_sender.send(100.0);
 
