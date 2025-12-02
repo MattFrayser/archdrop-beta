@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::types::Nonce;
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FileEntry {
     pub index: usize,
@@ -42,7 +44,7 @@ impl Manifest {
                 .to_string();
 
             // Unique nonce for each file
-            let nonce = crate::crypto::Nonce::new();
+            let nonce = Nonce::new();
 
             files.push(FileEntry {
                 index,

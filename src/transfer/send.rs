@@ -1,12 +1,10 @@
 use std::io::SeekFrom;
 
-use crate::config::CHUNK_SIZE;
-use crate::crypto::Nonce;
 use crate::server::state::AppState;
 use crate::transfer::manifest::Manifest;
 use crate::transfer::util::AppError;
-use aes_gcm::aead::{generic_array::GenericArray, Aead};
-use aes_gcm::Aes256Gcm;
+use crate::types::Nonce;
+use crate::{config::CHUNK_SIZE, crypto::encrypt_chunk_at_position};
 use anyhow::Result;
 use axum::{
     body::Body,
@@ -22,7 +20,7 @@ pub async fn manifest_handler(
     State(state): State<AppState>,
 ) -> Result<Json<Manifest>, AppError> {
     // Validate token
-    if !state.session.claim(&token) {
+    if token != state.session.token() {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
@@ -39,9 +37,13 @@ pub async fn send_handler(
     Path((token, file_index, chunk_index)): Path<(String, usize, usize)>,
     State(state): State<AppState>,
 ) -> Result<Response<Body>, AppError> {
-    // validate token and get file path
-    if !state.session.is_active(&token) {
-        return Err(anyhow::anyhow!("Invalid token").into());
+    // Claim token only once on first chunk
+    if file_index == 0 && chunk_index == 0 {
+        if !state.session.claim(&token) {
+            return Err(anyhow::anyhow!("Session already claimed").into());
+        }
+    } else if !state.session.is_active(&token) {
+        return Err(anyhow::anyhow!("Invalid session").into());
     }
 
     let file_entry = state
@@ -74,25 +76,6 @@ pub async fn send_handler(
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(encrypted))?)
-}
-
-pub fn encrypt_chunk_at_position(
-    cipher: &Aes256Gcm,
-    nonce_base: &Nonce,
-    plaintext: &[u8],
-    counter: u32,
-) -> Result<Vec<u8>> {
-    // Construct Nonce
-    // [7 byte base][4 byte counter][1 byte flag]
-    let mut full_nonce = [0u8; 12];
-    full_nonce[..7].copy_from_slice(nonce_base.as_bytes());
-    full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
-
-    let nonce_array = GenericArray::from_slice(&full_nonce);
-
-    cipher
-        .encrypt(nonce_array, plaintext)
-        .map_err(|e| anyhow::anyhow!("Encryption failed: {:?}", e))
 }
 
 pub async fn complete_download(

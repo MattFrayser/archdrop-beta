@@ -4,10 +4,10 @@ pub mod state;
 pub mod utils;
 pub mod web;
 
-use crate::crypto::{EncryptionKey, Nonce};
 use crate::server::session::Session;
 use crate::server::state::{AppState, ServerInstance};
 use crate::transfer::{manifest::Manifest, receive, send};
+use crate::types::{EncryptionKey, Nonce};
 use anyhow::Result;
 use axum::{
     routing::{get, post},
@@ -54,7 +54,7 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     };
 
     // Send specific session
-    let (session, token) = Session::new_send(manifest.clone(), session_key_b64.clone());
+    let (session, token) = Session::new_send(manifest.clone(), session_key);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_send(session, progress_sender.clone());
@@ -105,7 +105,7 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .to_string();
 
     // Receive specific session
-    let (session, token) = Session::new_receive(destination.clone(), session_key_b64.clone());
+    let (session, token) = Session::new_receive(destination.clone(), session_key);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_receive(session, progress_sender.clone());

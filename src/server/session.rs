@@ -1,10 +1,10 @@
 use crate::transfer::manifest::{FileEntry, Manifest};
+use crate::types::EncryptionKey;
 use aes_gcm::{Aes256Gcm, KeyInit};
 use sha2::digest::generic_array::GenericArray;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -14,13 +14,12 @@ pub struct Session {
     completed: Arc<AtomicBool>,
     manifest: Option<Arc<Manifest>>, // send mode
     destination: Option<PathBuf>,    // receive mode
-    session_key: String,
+    session_key: EncryptionKey,
     cipher: Arc<Aes256Gcm>,
-    used: Arc<Mutex<bool>>,
 }
 
 impl Session {
-    pub fn new_send(manifest: Manifest, session_key: String) -> (Self, String) {
+    pub fn new_send(manifest: Manifest, session_key: EncryptionKey) -> (Self, String) {
         let token = Uuid::new_v4().to_string();
 
         let cipher = Arc::new(Aes256Gcm::new(GenericArray::from_slice(
@@ -35,12 +34,11 @@ impl Session {
             destination: None,
             session_key,
             cipher,
-            used: Arc::new(Mutex::new(false)),
         };
         (store, token)
     }
 
-    pub fn new_receive(destination: PathBuf, session_key: String) -> (Self, String) {
+    pub fn new_receive(destination: PathBuf, session_key: EncryptionKey) -> (Self, String) {
         let token = Uuid::new_v4().to_string();
 
         let cipher = Arc::new(Aes256Gcm::new(GenericArray::from_slice(
@@ -55,7 +53,6 @@ impl Session {
             destination: Some(destination),
             session_key,
             cipher,
-            used: Arc::new(Mutex::new(false)),
         };
         (store, token)
     }
@@ -72,8 +69,12 @@ impl Session {
         self.destination.as_ref()
     }
 
-    pub fn session_key(&self) -> &str {
+    pub fn session_key(&self) -> &EncryptionKey {
         &self.session_key
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     pub fn cipher(&self) -> &Arc<Aes256Gcm> {

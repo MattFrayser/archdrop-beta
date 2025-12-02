@@ -2,6 +2,7 @@
 // Provides operations for chunk management
 // RAII guard is used for cleanups on Error
 
+use aes_gcm::Aes256Gcm;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -11,7 +12,8 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::config::CHUNK_SIZE;
-use crate::crypto::{decrypt::decrypt_chunk_at_position, EncryptionKey, Nonce};
+use crate::crypto::decrypt_chunk_at_position;
+use crate::types::Nonce;
 
 pub struct ChunkStorage {
     file: File,
@@ -53,12 +55,13 @@ impl ChunkStorage {
         &mut self,
         chunk_index: usize,
         encrypted_data: Vec<u8>,
-        key: &EncryptionKey,
+        cipher: &Aes256Gcm,
         nonce: &Nonce,
     ) -> Result<()> {
         // Decrypt chunk
         // AES-GCM auth tag handles single chunk integrity
-        let decrypted = decrypt_chunk_at_position(key, nonce, &encrypted_data, chunk_index as u32)?;
+        let decrypted =
+            decrypt_chunk_at_position(cipher, nonce, &encrypted_data, chunk_index as u32)?;
 
         // Seek positon - handles out of order arival
         let offset = (chunk_index as u64) * CHUNK_SIZE;
@@ -75,6 +78,7 @@ impl ChunkStorage {
         self.file.flush().await?;
 
         // Calc final hash for integrity of operation
+        // Hash is done at end since chunks may not arrive in order
         self.file.seek(SeekFrom::Start(0)).await?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; 16 * 1024]; // 16KB

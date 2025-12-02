@@ -1,7 +1,7 @@
-use crate::crypto::{EncryptionKey, Nonce};
 use crate::server::state::{AppState, ReceiveSession};
 use crate::transfer::storage::ChunkStorage;
 use crate::transfer::util::{hash_path, validate_path, AppError};
+use crate::types::Nonce;
 use anyhow::{Context, Result};
 use axum::extract::{Multipart, Path, State};
 use axum::Json;
@@ -12,13 +12,20 @@ pub async fn receive_handler(
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
-    // Check token is valid
-    if !state.session.claim(&token) {
-        return Err(anyhow::anyhow!("Invalid token").into());
-    }
-
     // Parse upload
     let chunk = parse_chunk_upload(multipart).await?;
+
+    // check token on first chunk
+    if chunk.chunk_index == 0 {
+        if !state.session.claim(&token) {
+            return Err(anyhow::anyhow!("Invalid token").into());
+        }
+    } else {
+        // For other chunks, check if active
+        if !state.session.is_active(&token) {
+            return Err(anyhow::anyhow!("Invalid or inactive session").into());
+        }
+    }
 
     // Get or create session
     let file_id = hash_path(&chunk.relative_path);
@@ -79,13 +86,13 @@ pub async fn receive_handler(
     }
 
     // store chunk
-    let session_key = EncryptionKey::from_base64(state.session.session_key())?;
-
     let nonce = Nonce::from_base64(&session.nonce)?;
+
+    let cipher = state.session.cipher();
 
     session
         .storage
-        .store_chunk(chunk.chunk_index, chunk.data, &session_key, &nonce)
+        .store_chunk(chunk.chunk_index, chunk.data, cipher, &nonce)
         .await?;
 
     Ok(Json(json!({

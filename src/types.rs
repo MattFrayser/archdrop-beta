@@ -1,5 +1,3 @@
-pub mod decrypt;
-
 use base64::{engine::general_purpose, Engine};
 use rand::rngs::OsRng;
 use rand::RngCore;

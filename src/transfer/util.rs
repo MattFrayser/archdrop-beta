@@ -1,11 +1,10 @@
-use std::path::{Component, Path};
 use std::fmt;
+use std::path::{Component, Path};
 
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 //================
@@ -34,12 +33,6 @@ where
     }
 }
 
-#[derive(Deserialize)]
-pub struct StatusQuery {
-    #[serde(rename = "relativePath")]
-    pub relative_path: String,
-}
-
 //===============
 // Path Handling
 //===============
@@ -55,7 +48,9 @@ pub enum PathValidationError {
 impl fmt::Display for PathValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PathValidationError::ContainsParentDir => write!(f, "Path contains parent directory (..)"),
+            PathValidationError::ContainsParentDir => {
+                write!(f, "Path contains parent directory (..)")
+            }
             PathValidationError::AbsolutePath => write!(f, "Path is absolute"),
             PathValidationError::InvalidComponent => write!(f, "Path contains invalid component"),
             PathValidationError::NullByte => write!(f, "Path contains null byte"),
