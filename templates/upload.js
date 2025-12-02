@@ -1,10 +1,13 @@
+//=====
+// UI
+//=====
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
 const uploadBtn = document.getElementById('uploadBtn');
 let selectedFiles = [];
 
-// Click to upload
+// Click upload
 uploadArea.addEventListener('click', () => fileInput.click())
 
 // File selected
@@ -94,7 +97,9 @@ function removeFile(index) {
     updateFileList()
 }
 
-
+//===========
+// LOGIC
+//==========
 async function uploadFiles(selectedFiles) {
     if (selectedFiles.length === 0) {
         alert('Please select files')

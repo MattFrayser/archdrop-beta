@@ -3,6 +3,7 @@ use aes_gcm::{aead::Aead, Aes256Gcm};
 use anyhow::Result;
 use sha2::digest::generic_array::GenericArray;
 
+/// Decrypt chunk using AES-256-GCM
 pub fn decrypt_chunk_at_position(
     cipher: &Aes256Gcm,
     nonce_base: &Nonce,
@@ -10,19 +11,15 @@ pub fn decrypt_chunk_at_position(
     counter: u32,
 ) -> Result<Vec<u8>> {
     // Consctruct full 12 byte nonce
-    // [7 byte base][4 byte BE counter][1 byte end flag]
-    let mut full_nonce = [0u8; 12];
-    full_nonce[..7].copy_from_slice(nonce_base.as_bytes());
-    full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
-    // end flag left 0 for non final
-
+    let full_nonce = nonce_base.with_counter(counter);
     let nonce_array = GenericArray::from_slice(&full_nonce);
 
     cipher
         .decrypt(nonce_array, encrypted_data)
-        .map_err(|e| anyhow::anyhow!("Decryption failed at counter {}: {:?}", counter, e))
+        .map_err(|e| anyhow::anyhow!("Decryption failed: {:?}", e))
 }
 
+/// Encrypt chunk using AES-256-GCM
 pub fn encrypt_chunk_at_position(
     cipher: &Aes256Gcm,
     nonce_base: &Nonce,
@@ -30,11 +27,7 @@ pub fn encrypt_chunk_at_position(
     counter: u32,
 ) -> Result<Vec<u8>> {
     // Construct Nonce
-    // [7 byte base][4 byte counter][1 byte flag]
-    let mut full_nonce = [0u8; 12];
-    full_nonce[..7].copy_from_slice(nonce_base.as_bytes());
-    full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
-
+    let full_nonce = nonce_base.with_counter(counter);
     let nonce_array = GenericArray::from_slice(&full_nonce);
 
     cipher

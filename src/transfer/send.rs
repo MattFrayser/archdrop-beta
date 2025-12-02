@@ -1,6 +1,6 @@
 use std::io::SeekFrom;
 
-use crate::server::state::AppState;
+use crate::server::state::{AppState, ChunkSendSession};
 use crate::transfer::manifest::Manifest;
 use crate::transfer::util::AppError;
 use crate::types::Nonce;
@@ -25,10 +25,12 @@ pub async fn manifest_handler(
     }
 
     // Get manifest from session
-    let manifest = state
+    let send_session = state
         .session
-        .get_manifest()
-        .ok_or_else(|| anyhow::anyhow!("No manifest available"))?;
+        .as_send()
+        .ok_or_else(|| anyhow::anyhow!("Not a send session"))?;
+
+    let manifest = send_session.manifest();
 
     Ok(Json(manifest.clone()))
 }
@@ -46,8 +48,12 @@ pub async fn send_handler(
         return Err(anyhow::anyhow!("Invalid session").into());
     }
 
-    let file_entry = state
+    let send_session = state
         .session
+        .as_send()
+        .ok_or_else(|| anyhow::anyhow!("Not a send session"))?;
+
+    let file_entry = send_session
         .get_file(file_index)
         .ok_or_else(|| anyhow::anyhow!("invalid file index"))?;
 
@@ -67,6 +73,14 @@ pub async fn send_handler(
     let chunk_len = (end - start) as usize;
     let mut buffer = vec![0u8; chunk_len];
     reader.read_exact(&mut buffer).await?;
+
+    // Hash chunk for integrity verification
+    let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
+    let mut chunk_send_session = state
+        .send_sessions
+        .entry(file_index)
+        .or_insert_with(|| ChunkSendSession::new(total_chunks));
+    chunk_send_session.process_chunk(chunk_index, &buffer);
 
     let file_nonce = Nonce::from_base64(&file_entry.nonce)?;
     let cipher = state.session.cipher();
@@ -94,5 +108,28 @@ pub async fn complete_download(
     Ok(axum::Json(serde_json::json!({
         "success": true,
         "message": "Download complete"
+    })))
+}
+
+pub async fn get_file_hash(
+    Path((token, file_index)): Path<(String, usize)>,
+    State(state): State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    if !state.session.is_active(&token) {
+        return Err(anyhow::anyhow!("Invalid token").into());
+    }
+
+    let chunk_send_session = state
+        .send_sessions
+        .get(&file_index)
+        .ok_or_else(|| anyhow::anyhow!("No hash available yet"))?;
+
+    let hash = chunk_send_session
+        .finalized_hash
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Download not complete"))?;
+
+    Ok(axum::Json(serde_json::json!({
+        "sha256": hash
     })))
 }

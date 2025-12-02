@@ -40,8 +40,8 @@ async function getCredentialsFromUrl() {
         throw new Error('Missing encryption key')
     }
 
-    // Clear url fragment immediatly after getti 
-    // window.location.replace(window.location.href.split('#')[0])
+    // Clear URL fragment immediately after extraction to prevent it from persisting in browser history
+    history.replaceState(null, document.title, location.pathname + location.search)
 
     // base64 -> string -> byte array
     const keyData = urlSafeBase64ToUint8Array(keyBase64);
@@ -73,6 +73,9 @@ function arrayBufferToBase64(buffer) {
     return base64
 }
 
+//==============
+// Crypto
+//==============
 // Construct nonce to match Rusts EncryptorBE32
 // [7 byte base][4 byte counter][1 byte last flag]
 function generateNonce(nonceBase64, counter) {
@@ -98,7 +101,6 @@ function concatArrays(...arrays) {
     return result;
 }
 
-
 async function calculateHash(data) {
     const hashBuffer = await crypto.subtle.digest('SHA-256', data)
     const hashArray = Array.from(new Uint8Array(hashBuffer))
@@ -106,16 +108,8 @@ async function calculateHash(data) {
     return hashHex
 }
 
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
 //=============
-// UI Helpers
+// UI 
 //=============
 
 // Create file item element with optional remove button
@@ -210,6 +204,14 @@ function updateFileProgress(fileItem, completedChunks, totalChunks) {
     const progressText = fileItem.querySelector('.progress-text')
     if (progressBar) progressBar.style.width = `${percent}%`
     if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
 }
 
 //================

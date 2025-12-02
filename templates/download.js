@@ -1,8 +1,9 @@
 // Detect browser capabilities once on page load
+// Chrome bases allows for File System Access
+// which vastly increases max download size
 const browserCaps = detectBrowserCapabilities()
-
 function detectBrowserCapabilities() {
-    const caps = {
+    return {
         // File System Access API (Chrome, Edge, Opera, Brave)
         hasFileSystemAccess: 'showSaveFilePicker' in window,
         
@@ -14,11 +15,13 @@ function detectBrowserCapabilities() {
             ? navigator.deviceMemory * 1024 * 1024 * 1024 
             : 4 * 1024 * 1024 * 1024, // Default 4GB
     }
-    
-    console.log('Browser capabilities:', caps)
-    return caps
 }
 
+//==========
+// UI
+//==========
+
+// Download button
 document.addEventListener('DOMContentLoaded', async () => {
     const downloadBtn = document.getElementById('downloadBtn');
     if (downloadBtn) {
@@ -38,6 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 })
 
+// List of files to download
 function displayFileList(files) {
     const fileList = document.getElementById('fileList')
     if (!fileList || files.length === 0) return
@@ -57,10 +61,9 @@ function displayFileList(files) {
     })
 }
 
-function supportFileSystemAccess() {
-    return 'showOpenFilePicker' in window;
-}
-
+//===========
+// Logic
+//===========
 async function startDownload() {
     const fileList = document.getElementById('fileList')
     const fileItems = fileList.querySelectorAll('.file-item')
@@ -168,7 +171,7 @@ async function downloadViaFileSystemAPI(token, fileEntry, key, nonceBase, totalC
         
         // Verify hash by reading back from disk
         const file = await fileHandle.getFile()
-        await verifyHash(file, fileEntry)
+        await verifyHash(file, fileEntry, token)
         
         // Update UI
         const progressText = fileItem.querySelector('.progress-text')
@@ -203,7 +206,7 @@ async function downloadViaBlob(token, fileEntry, key, nonceBase, totalChunks, fi
     )
 
     const blob = new Blob(decryptedChunks)
-    await verifyHash(blob, fileEntry)
+    await verifyHash(blob, fileEntry, token)
 
     // Trigger download
     const url = URL.createObjectURL(blob)
@@ -220,12 +223,15 @@ async function showMemoryWarning(fileEntry) {
     const fileSize = formatFileSize(fileEntry.size)
     const availableMem = formatFileSize(browserCaps.estimatedMemory)
     
-    const message = `Warning: This file (${fileSize}) is very large and may use significant memory.
+    const message = `
+        Warning: This file (${fileSize}) is very large and may use significant memory.
 
-Available memory: ~${availableMem}
-Your browser: ${browserCaps.hasFileSystemAccess ? 'Chrome/Edge' : 'Firefox/Safari'}
+        Available memory: ~${availableMem}
+        Your browser: ${browserCaps.hasFileSystemAccess ? 'Chrome/Edge' : 'Firefox/Safari'}
 
-${browserCaps.hasFileSystemAccess ? '' : 'Recommendation: Use Chrome or Edge for files over 200MB for better memory efficiency.\n\n'}Continue download?`
+        ${browserCaps.hasFileSystemAccess ? '' : 'Recommendation: Use Chrome or Edge for files over 200MB for better memory efficiency.\n\n'}
+        Continue download?
+    `
     
     if (!confirm(message)) {
         throw new Error('Download cancelled by user')
@@ -233,7 +239,8 @@ ${browserCaps.hasFileSystemAccess ? '' : 'Recommendation: Use Chrome or Edge for
 }
 
 
-async function verifyHash(blob, fileEntry) {
+async function verifyHash(blob, fileEntry, token) {
+    // Compute local hash
     const arrayBuffer = await blob.arrayBuffer()
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer)
     const hashArray = Array.from(new Uint8Array(hashBuffer))
@@ -241,9 +248,20 @@ async function verifyHash(blob, fileEntry) {
         .map(b => b.toString(16).padStart(2,'0'))
         .join('')
 
-    if (computedHash !== fileEntry.sha256) {
-        throw new Error(`File integrity check failed! Expected ${fileEntry.sha256}, got ${computedHash}`)
+    // Request hash from server
+    const response = await fetch(`/send/${token}/${fileEntry.index}/hash`)
+    if (!response.ok) {
+        console.warn(`Could not verify ${fileEntry.name}: ${response.status}`)
+        return // Skip if hash unavailable
     }
+
+    const { sha256 } = await response.json()
+
+    if (computedHash !== sha256) {
+        throw new Error(`File integrity check failed! Expected ${sha256}, got ${computedHash}`)
+    }
+
+    console.log(`✓ Verified ${fileEntry.name}`)
 }
 
 async function downloadChunk(token, fileIndex, chunkIndex, maxRetries = 3) {

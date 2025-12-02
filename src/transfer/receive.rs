@@ -1,4 +1,4 @@
-use crate::server::state::{AppState, ReceiveSession};
+use crate::server::state::{AppState, ChunkReceiveSession};
 use crate::transfer::storage::ChunkStorage;
 use crate::transfer::util::{hash_path, validate_path, AppError};
 use crate::types::Nonce;
@@ -37,11 +37,12 @@ pub async fn receive_handler(
     let session_exits = state.receive_sessions.contains_key(&file_id);
 
     if !session_exits {
-        let destination = state
+        let receive_session = state
             .session
-            .get_destination()
-            .expect("No destination set for receive session")
-            .clone();
+            .as_receive()
+            .expect("Not a receive session");
+
+        let destination = receive_session.destination().clone();
 
         // Validate provided path and join to base
         validate_path(&chunk.relative_path).context("Invalid file path")?;
@@ -54,7 +55,7 @@ pub async fn receive_handler(
 
         state.receive_sessions.insert(
             file_id.clone(),
-            ReceiveSession {
+            ChunkReceiveSession {
                 storage,
                 total_chunks: chunk.total_chunks,
                 nonce: chunk.nonce.clone().unwrap_or_default(),

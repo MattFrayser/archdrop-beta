@@ -36,6 +36,7 @@ pub async fn wait_for_server_ready(port: u16, timeout_secs: u64, use_https: bool
         }
     }
 }
+
 pub fn spawn_tui(
     progress: watch::Receiver<f64>,
     file_name: String,

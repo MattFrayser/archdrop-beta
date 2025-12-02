@@ -13,7 +13,7 @@ enum Protocol {
 pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
     let service = direction_to_str(direction);
 
-    // Clone what we need before consuming server
+    // Clone needed before consuming server
     let session = server.session.clone();
     let display_name = server.display_name.clone();
     let progress_receiver = server.progress_receiver();

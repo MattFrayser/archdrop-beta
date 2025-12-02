@@ -4,7 +4,6 @@ pub mod state;
 pub mod utils;
 pub mod web;
 
-use crate::server::session::Session;
 use crate::server::state::{AppState, ServerInstance};
 use crate::transfer::{manifest::Manifest, receive, send};
 use crate::types::{EncryptionKey, Nonce};
@@ -52,7 +51,8 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     };
 
     // Send specific session
-    let (session, _token) = Session::new_send(manifest.clone(), session_key, nonce);
+    let (send_session, _token) = session::SendSession::new(manifest.clone(), session_key, nonce);
+    let session = session::Session::Send(send_session);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_send(session.clone(), progress_sender.clone());
@@ -66,6 +66,7 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
             "/send/:token/:file_index/chunk/:chunk_index",
             get(send::send_handler),
         )
+        .route("/send/:token/:file_index/hash", get(send::get_file_hash))
         .route("/send/:token/complete", post(send::complete_download))
         .route("/send/:token", get(web::serve_download_page))
         .route("/download.js", get(web::serve_download_js))
@@ -99,7 +100,8 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .to_string();
 
     // Receive specific session
-    let (session, _token) = Session::new_receive(destination.clone(), session_key, nonce);
+    let (receive_session, _token) = session::ReceiveSession::new(destination.clone(), session_key, nonce);
+    let session = session::Session::Receive(receive_session);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_receive(session.clone(), progress_sender.clone());

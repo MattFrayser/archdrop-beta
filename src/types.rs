@@ -20,8 +20,10 @@ impl EncryptionKey {
     }
 
     pub fn to_base64(&self) -> String {
+        // url safe base64
         general_purpose::URL_SAFE_NO_PAD.encode(&self.0)
     }
+
     pub fn from_base64(b64: &str) -> anyhow::Result<Self> {
         use base64::{engine::general_purpose, Engine};
         let bytes = general_purpose::URL_SAFE_NO_PAD.decode(b64)?;
@@ -74,6 +76,14 @@ impl Nonce {
         let mut nonce = [0u8; 7];
         nonce.copy_from_slice(&bytes);
         Ok(Self(nonce))
+    }
+
+    pub fn with_counter(&self, counter: u32) -> [u8; 12] {
+        let mut full_nonce = [0u8; 12];
+        full_nonce[..7].copy_from_slice(self.as_bytes());
+        full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
+
+        full_nonce
     }
 }
 
