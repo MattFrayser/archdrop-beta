@@ -38,44 +38,41 @@ pub struct ReceiveSession {
     pub file_size: u64,
 }
 
-#[derive(Clone)]
-pub struct SessionContext {
-    pub token: String,
-    pub session_key: String,
-    pub nonce: String,
-    pub display_name: String,
-    pub progress_receiver: watch::Receiver<f64>,
-}
-
 // Server config and runtime state
 pub struct ServerInstance {
     pub app: Router,
-    pub context: Arc<SessionContext>,
+    pub session: Session,
+    pub display_name: String,
     pub progress_sender: watch::Sender<f64>,
 }
 
 impl ServerInstance {
     pub fn new(
         app: Router,
+        session: Session,
         display_name: String,
-        nonce: String,
-        token: String,
-        session_key: String,
         progress_sender: watch::Sender<f64>,
     ) -> Self {
-        let progress_receiver = progress_sender.subscribe();
-        let context = SessionContext {
-            token,
-            session_key,
-            nonce,
-            display_name,
-            progress_receiver,
-        };
-
         Self {
             app,
-            context: Arc::new(context),
+            session,
+            display_name,
             progress_sender,
         }
+    }
+
+    pub fn build_url(&self, base_url: &str, service: &str) -> String {
+        format!(
+            "{}/{}/{}#key={}&nonce={}",
+            base_url,
+            service,
+            self.session.token(),
+            self.session.session_key_b64(),
+            self.session.session_nonce_b64()
+        )
+    }
+
+    pub fn progress_receiver(&self) -> watch::Receiver<f64> {
+        self.progress_sender.subscribe()
     }
 }

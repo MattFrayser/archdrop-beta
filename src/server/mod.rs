@@ -43,10 +43,8 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     // Generate crypto keys
     let session_key = EncryptionKey::new();
     let nonce = Nonce::new();
-    let session_key_b64 = session_key.to_base64();
-    let nonce_b64 = nonce.to_base64();
 
-    // TUI display name
+    // TUI display
     let display_name = if manifest.files.len() == 1 {
         manifest.files[0].name.clone()
     } else {
@@ -54,10 +52,10 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     };
 
     // Send specific session
-    let (session, token) = Session::new_send(manifest.clone(), session_key);
+    let (session, _token) = Session::new_send(manifest.clone(), session_key, nonce);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
-    let state = AppState::new_send(session, progress_sender.clone());
+    let state = AppState::new_send(session.clone(), progress_sender.clone());
 
     // Create axium router
     // Note: More specific routes must come before less specific ones
@@ -77,10 +75,8 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
 
     let server = ServerInstance::new(
         app,
+        session,
         display_name,
-        nonce_b64,
-        token,
-        session_key_b64,
         progress_sender,
     );
 
@@ -94,8 +90,6 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
     // Generate crypto keys
     let session_key = EncryptionKey::new();
     let nonce = Nonce::new();
-    let session_key_b64 = session_key.to_base64();
-    let nonce_b64 = nonce.to_base64();
 
     // TUI display name
     let display_name = destination
@@ -105,10 +99,10 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .to_string();
 
     // Receive specific session
-    let (session, token) = Session::new_receive(destination.clone(), session_key);
+    let (session, _token) = Session::new_receive(destination.clone(), session_key, nonce);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
-    let state = AppState::new_receive(session, progress_sender.clone());
+    let state = AppState::new_receive(session.clone(), progress_sender.clone());
 
     // Create axium router
     // Note: More specific routes must come before less specific ones
@@ -125,10 +119,8 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
 
     let server = ServerInstance::new(
         app,
+        session,
         display_name,
-        nonce_b64,
-        token,
-        session_key_b64,
         progress_sender,
     );
 

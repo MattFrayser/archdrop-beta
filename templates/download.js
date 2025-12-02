@@ -1,6 +1,23 @@
-const CHUNK_SIZE = 1024 * 1024 // 1MB (increased from 64KB for better throughput)
-const MAX_MEMORY = 100 * 1024 * 1024 // 100MB
-const MAX_CONCURRENT_DOWNLOADS = 8 // Parallel chunk download limit
+// Detect browser capabilities once on page load
+const browserCaps = detectBrowserCapabilities()
+
+function detectBrowserCapabilities() {
+    const caps = {
+        // File System Access API (Chrome, Edge, Opera, Brave)
+        hasFileSystemAccess: 'showSaveFilePicker' in window,
+        
+        // Device memory in GB (Chrome-only, returns 2, 4, 8, etc.)
+        deviceMemoryGB: navigator.deviceMemory || null,
+        
+        // Estimated available memory in bytes
+        estimatedMemory: navigator.deviceMemory 
+            ? navigator.deviceMemory * 1024 * 1024 * 1024 
+            : 4 * 1024 * 1024 * 1024, // Default 4GB
+    }
+    
+    console.log('Browser capabilities:', caps)
+    return caps
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     const downloadBtn = document.getElementById('downloadBtn');
@@ -10,7 +27,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load manifest and display files
     try {
-        const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
         const manifestResponse = await fetch(`/send/${token}/manifest`)
         if (manifestResponse.ok) {
@@ -29,71 +45,20 @@ function displayFileList(files) {
     fileList.classList.add('show')
 
     files.forEach((file, index) => {
-        const item = createFileItem(file, index)
+        const item = createFileItem(file, index, {
+            initialProgressText: 'Ready to download',
+            useSummaryWrapper: true
+        })
 
-        // --- ADD THIS LINE ---
         const progress = item.querySelector('.file-progress')
-        if (progress) progress.classList.add('show') 
-        // ----------------------
+        if (progress) progress.classList.add('show')
+
         fileList.appendChild(item)
     })
 }
 
-function createFileItem(file, index) {
-    const item = document.createElement('div')
-    item.className = 'file-item'
-    item.dataset.fileIndex = index
-
-    const icon = document.createElement('div')
-    icon.className = 'file-icon'
-    icon.innerHTML = `
-        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-            <polyline points="13 2 13 9 20 9"></polyline>
-        </svg>
-    `
-
-    const details = document.createElement('div')
-    details.className = 'file-details'
-
-    const summary = document.createElement('div')
-    summary.className = 'file-summary'
-
-    const name = document.createElement('div')
-    name.className = 'file-name'
-    name.textContent = file.name
-
-    const size = document.createElement('div')
-    size.className = 'file-size'
-    size.textContent = formatFileSize(file.size)
-
-    const progress = document.createElement('div')
-    progress.className = 'file-progress'
-    progress.innerHTML = `
-        <div class="progress-bar-container">
-            <div class="progress-bar"></div>
-        </div>
-        <div class="progress-text">Ready to download</div>
-    `
-
-    summary.appendChild(name)
-    summary.appendChild(size)
-
-    details.appendChild(summary)
-    details.appendChild(progress)
-
-    item.appendChild(icon)
-    item.appendChild(details)
-
-    return item
-}
-
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes'
-    const k = 1024
-    const sizes = ['Bytes', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+function supportFileSystemAccess() {
+    return 'showOpenFilePicker' in window;
 }
 
 async function startDownload() {
@@ -119,18 +84,25 @@ async function startDownload() {
 
         const manifest = await manifestResponse.json()
 
-        // Download each file
-        for (let i = 0; i < manifest.files.length; i++) {
-            const fileEntry = manifest.files[i]
-            const fileItem = fileItems[i]
+        // download files concurrently
+        await runWithConcurrency(
+            manifest.files.map((file, index) => ({ file, index, fileItem: fileItems[index] })),
+            async ({ file, fileItem }) => {
+                fileItem.classList.add('downloading')
+                try {
+                    await downloadFile(token, file, key, fileItem)
+                    fileItem.classList.remove('downloading')
+                    fileItem.classList.add('completed')
+                } catch (error) {
+                    fileItem.classList.remove('downloading')
+                    fileItem.classList.add('error')
+                    throw error
+                }
+            },
+            MAX_CONCURRENT_FILES
+        )
 
-            fileItem.classList.add('downloading')
-            await downloadSingleFile(token, fileEntry, key, fileItem)
-            fileItem.classList.remove('downloading')
-            fileItem.classList.add('completed')
-        }
-
-         await fetch(`/send/${token}/complete`, { method: 'POST' })
+        await fetch(`/send/${token}/complete`, { method: 'POST' })
 
         const downloadBtn = document.getElementById('downloadBtn')
         downloadBtn.textContent = 'Download Complete!'
@@ -141,101 +113,99 @@ async function startDownload() {
     }
 }
 
-async function downloadSingleFile(token, fileEntry, sessionKey, fileItem) {
+async function downloadFile(token, fileEntry, key, fileItem) {
     const nonceBase = urlSafeBase64ToUint8Array(fileEntry.nonce)
     const totalChunks = Math.ceil(fileEntry.size / CHUNK_SIZE)
-
-    // Large file -> Use File System Access API
-    if (fileEntry.size > MAX_MEMORY && 'showSaveFilePicker' in window) {
-        await downloadLargeFile(token, fileEntry, sessionKey, nonceBase, totalChunks, fileItem)
+    
+    if (browserCaps.hasFileSystemAccess && fileEntry.size > FILE_SYSTEM_API_THRESHOLD) {
+        console.log(`Using File System API for ${fileEntry.name} (${formatFileSize(fileEntry.size)})`)
+        await downloadViaFileSystemAPI(token, fileEntry, key, nonceBase, totalChunks, fileItem)
     } else {
-        await downloadSmallFile(token, fileEntry, sessionKey, nonceBase, totalChunks, fileItem)
+        // Check if file might be too large for available memory
+        if (fileEntry.size > browserCaps.estimatedMemory * 0.5) {
+            await showMemoryWarning(fileEntry)
+        }
+        
+        console.log(`Using in-memory download for ${fileEntry.name}`)
+        await downloadViaBlob(token, fileEntry, key, nonceBase, totalChunks, fileItem)
     }
 }
 
-async function downloadLargeFile(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
+async function downloadViaFileSystemAPI(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
+    // Prompt user to save file
     const fileHandle = await window.showSaveFilePicker({
         suggestedName: fileEntry.name,
-    });
-
+    })
+    
     const writable = await fileHandle.createWritable()
-
+    
     try {
-        // Store decrypted chunks in order for hash verification
-        const decryptedChunks = new Array(totalChunks)
-
-        // Track progress
         let completedChunks = 0
-        const updateProgress = () => {
-            const percent = Math.round((completedChunks / totalChunks) * 100)
-            const progressBar = fileItem.querySelector('.progress-bar')
-            const progressText = fileItem.querySelector('.progress-text')
-            if (progressBar) progressBar.style.width = `${percent}%`
-            if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
-        }
 
-        // Parallel chunk downloads with concurrency limit
-        await downloadChunksParallel(
-            token,
-            fileEntry.index,
-            totalChunks,
-            key,
-            nonceBase,
-            async (chunkIndex, decryptedData) => {
-                // Write to disk immediately
-                await writable.write(decryptedData)
-                // Store for hash verification
-                decryptedChunks[chunkIndex] = decryptedData
-                // Update progress
+        // Download chunks with concurrency control (NO in-memory storage)
+        await runWithConcurrency(
+            Array.from({ length: totalChunks }, (_, i) => i),
+            async (chunkIndex) => {
+                const encrypted = await downloadChunk(token, fileEntry.index, chunkIndex)
+                const nonce = generateNonce(nonceBase, chunkIndex)
+                const decrypted = await crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv: nonce },
+                    key,
+                    encrypted
+                )
+
+                // Write directly to disk (not stored in memory)
+                await writable.write(new Uint8Array(decrypted))
+
                 completedChunks++
-                updateProgress()
-            }
+                updateFileProgress(fileItem, completedChunks, totalChunks)
+            },
+            MAX_CONCURRENT_DOWNLOADS
         )
-
+        
+        // Close file to flush to disk
         await writable.close()
-        // verify hash
-        const blob = new Blob(decryptedChunks)
-        await verifyHash(blob, fileEntry)
-
+        
+        // Verify hash by reading back from disk
+        const file = await fileHandle.getFile()
+        await verifyHash(file, fileEntry)
+        
+        // Update UI
+        const progressText = fileItem.querySelector('.progress-text')
+        if (progressText) progressText.textContent = 'Download complete!'
+        
     } catch (error) {
         await writable.abort()
         throw error
     }
 }
 
-async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
-    // Store decrypted chunks in order
+// In-memory blob path (Firefox/Safari/small files)
+async function downloadViaBlob(token, fileEntry, key, nonceBase, totalChunks, fileItem) {
     const decryptedChunks = new Array(totalChunks)
-
-    // Track progress
     let completedChunks = 0
-    const updateProgress = () => {
-        const percent = Math.round((completedChunks / totalChunks) * 100)
-        const progressBar = fileItem.querySelector('.progress-bar')
-        const progressText = fileItem.querySelector('.progress-text')
-        if (progressBar) progressBar.style.width = `${percent}%`
-        if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
-    }
 
-    // Parallel chunk downloads with concurrency limit
-    await downloadChunksParallel(
-        token,
-        fileEntry.index,
-        totalChunks,
-        key,
-        nonceBase,
-        async (chunkIndex, decryptedData) => {
-            decryptedChunks[chunkIndex] = decryptedData
-            // Update progress
+    await runWithConcurrency(
+        Array.from({ length: totalChunks }, (_, i) => i),
+        async (chunkIndex) => {
+            const encrypted = await downloadChunk(token, fileEntry.index, chunkIndex)
+            const nonce = generateNonce(nonceBase, chunkIndex)
+            const decrypted = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: nonce },
+                key,
+                encrypted
+            )
+            decryptedChunks[chunkIndex] = new Uint8Array(decrypted)
             completedChunks++
-            updateProgress()
-        }
+            updateFileProgress(fileItem, completedChunks, totalChunks)
+        },
+        MAX_CONCURRENT_DOWNLOADS
     )
 
     const blob = new Blob(decryptedChunks)
     await verifyHash(blob, fileEntry)
 
-    // Trigger Download
+    // Trigger download
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -246,54 +216,22 @@ async function downloadSmallFile(token, fileEntry, key, nonceBase, totalChunks, 
     URL.revokeObjectURL(url)
 }
 
-// Parallel chunk download with concurrency control
-async function downloadChunksParallel(token, fileIndex, totalChunks, key, nonceBase, onChunkReady) {
-    const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
+async function showMemoryWarning(fileEntry) {
+    const fileSize = formatFileSize(fileEntry.size)
+    const availableMem = formatFileSize(browserCaps.estimatedMemory)
+    
+    const message = `Warning: This file (${fileSize}) is very large and may use significant memory.
 
-    // Process chunks with concurrency limit
-    const processChunk = async (chunkIndex) => {
-        // Download encrypted chunk
-        const encrypted = await downloadChunk(token, fileIndex, chunkIndex)
+Available memory: ~${availableMem}
+Your browser: ${browserCaps.hasFileSystemAccess ? 'Chrome/Edge' : 'Firefox/Safari'}
 
-        // Decrypt chunk
-        const nonce = generateNonce(nonceBase, chunkIndex)
-        const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: nonce },
-            key,
-            encrypted
-        )
-
-        const decryptedData = new Uint8Array(decrypted)
-
-        // Call callback with chunk
-        await onChunkReady(chunkIndex, decryptedData)
+${browserCaps.hasFileSystemAccess ? '' : 'Recommendation: Use Chrome or Edge for files over 200MB for better memory efficiency.\n\n'}Continue download?`
+    
+    if (!confirm(message)) {
+        throw new Error('Download cancelled by user')
     }
-
-    // Run with concurrency limit
-    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_DOWNLOADS)
 }
 
-// Helper: Run async tasks with concurrency limit
-async function runWithConcurrency(items, asyncFn, concurrency) {
-    const results = []
-    const executing = []
-
-    for (const item of items) {
-        const promise = asyncFn(item).then(result => {
-            executing.splice(executing.indexOf(promise), 1)
-            return result
-        })
-
-        results.push(promise)
-        executing.push(promise)
-
-        if (executing.length >= concurrency) {
-            await Promise.race(executing)
-        }
-    }
-
-    return Promise.all(results)
-}
 
 async function verifyHash(blob, fileEntry) {
     const arrayBuffer = await blob.arrayBuffer()
@@ -309,21 +247,13 @@ async function verifyHash(blob, fileEntry) {
 }
 
 async function downloadChunk(token, fileIndex, chunkIndex, maxRetries = 3) {
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-            const response = await fetch(`/send/${token}/${fileIndex}/chunk/${chunkIndex}`)
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`)
-            }
-            return await response.arrayBuffer()
-        } catch(e) {
-            if (attempt === maxRetries - 1) {
-                throw new Error(`Failed to download chunk ${chunkIndex} after ${maxRetries} attempts: ${e.message}`)
-            }
-            const delay = 1000 * Math.pow(2, attempt);
-            await new Promise(r => setTimeout(r, delay));
+    return await retryWithExponentialBackoff(async () => {
+        const response = await fetch(`/send/${token}/${fileIndex}/chunk/${chunkIndex}`)
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
         }
-    }
+        return await response.arrayBuffer()
+    }, maxRetries, `chunk ${chunkIndex}`)
 }
 
 

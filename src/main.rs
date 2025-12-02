@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-// Clap creates CLI w/ arg parsing
+// Clap for CLI w/ arg parsing
 #[derive(Parser)]
 #[command(name = "archdrop")] // name in --help
 #[command(about = "Secure file transfer")] // desc in --help
@@ -21,7 +21,7 @@ struct Cli {
 enum Commands {
     Send {
         #[arg(help = "Path to file to send")]
-        paths: Vec<PathBuf>, // PathBuf for typesafe paths
+        paths: Vec<PathBuf>,
 
         #[arg(long, help = "Use HTTPS with self-signed cert. (Faster)")]
         local: bool,
@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
 
                 if path.is_dir() {
                     // Add files in dir recursively
+                    // handle nested directories
                     for entry in WalkDir::new(&path)
                         .into_iter()
                         .filter_map(|e| e.ok())
@@ -69,6 +70,7 @@ async fn main() -> Result<()> {
             let manifest = Manifest::new(files_to_send, None)
                 .await
                 .context("Failed to create manifest")?;
+
             // handle local flag
             let mode = if local {
                 ServerMode::Local

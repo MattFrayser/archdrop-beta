@@ -15,9 +15,15 @@ pub async fn receive_handler(
     // Parse upload
     let chunk = parse_chunk_upload(multipart).await?;
 
-    // check token on first chunk
-    if chunk.chunk_index == 0 {
-        if !state.session.claim(&token) {
+    // Get or create session
+    let file_id = hash_path(&chunk.relative_path);
+
+    // check token on first chunk of a new file
+    let is_new_file = !state.receive_sessions.contains_key(&file_id);
+
+    if is_new_file && chunk.chunk_index == 0 {
+        // First chunk of a new file - need either initial claim or active session
+        if !state.session.is_active(&token) && !state.session.claim(&token) {
             return Err(anyhow::anyhow!("Invalid token").into());
         }
     } else {
@@ -26,9 +32,6 @@ pub async fn receive_handler(
             return Err(anyhow::anyhow!("Invalid or inactive session").into());
         }
     }
-
-    // Get or create session
-    let file_id = hash_path(&chunk.relative_path);
 
     // Lock receive session
     let session_exits = state.receive_sessions.contains_key(&file_id);

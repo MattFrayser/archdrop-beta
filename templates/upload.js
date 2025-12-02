@@ -34,68 +34,8 @@ function handleFiles(files) {
 
     // Add new files to existing selection
     selectedFiles = [...selectedFiles, ...files]
-    
+
     updateFileList()
-}
-
-// Create file item element
-function createFileItem(file, index) {
-    const item = document.createElement('div')
-    item.className = 'file-item'
-
-    // File icon
-    const icon = document.createElement('div')
-    icon.className = 'file-icon'
-    icon.innerHTML = `
-        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-            <polyline points="13 2 13 9 20 9"></polyline>
-        </svg>
-    `;
-
-    // File details container
-    const details = document.createElement('div')
-    details.className = 'file-details'
-
-    const name = document.createElement('div')
-    name.className = 'file-name'
-    name.textContent = file.name
-
-    const size = document.createElement('div')
-    size.className = 'file-size'
-    size.textContent = formatFileSize(file.size)
-
-    // Progress bar (initially hidden)
-    const progress = document.createElement('div')
-    progress.className = 'file-progress'
-    progress.innerHTML = `
-        <div class="progress-bar-container">
-            <div class="progress-bar"></div>
-        </div>
-        <div class="progress-text">Waiting...</div>
-    `
-
-    details.appendChild(name)
-    details.appendChild(size)
-    details.appendChild(progress)
-
-    // Remove button
-    const removeBtn = document.createElement('button')
-    removeBtn.className = 'remove-file-btn'
-    removeBtn.type = 'button'
-    removeBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-    `;
-    removeBtn.addEventListener('click', () => removeFile(index))
-
-    item.appendChild(icon)
-    item.appendChild(details)
-    item.appendChild(removeBtn)
-
-    return item;
 }
 
 // Create summary element
@@ -122,7 +62,11 @@ function updateFileList() {
 
     // Add each file
     selectedFiles.forEach((file, index) => {
-        const fileItem = createFileItem(file, index)
+        const fileItem = createFileItem(file, index, {
+            showRemoveButton: true,
+            onRemove: removeFile,
+            initialProgressText: 'Waiting...'
+        })
         fileList.appendChild(fileItem)
     })
 
@@ -191,23 +135,12 @@ async function uploadFiles(selectedFiles) {
 }
 
 async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileItem) {
-    const CHUNK_SIZE = 1024 * 1024;  // 1MB chunks (increased from 64KB)
-    const MAX_CONCURRENT_UPLOADS = 8; // Parallel upload limit
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
     console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
 
     // Track completed chunks for progress
     let completedChunks = 0
-
-    // Update progress UI
-    const updateProgress = () => {
-        const percent = Math.round((completedChunks / totalChunks) * 100)
-        const progressBar = fileItem.querySelector('.progress-bar')
-        const progressText = fileItem.querySelector('.progress-text')
-        if (progressBar) progressBar.style.width = `${percent}%`
-        if (progressText) progressText.textContent = `${completedChunks}/${totalChunks} chunks (${percent}%)`
-    }
 
     // Prepare all chunk upload tasks
     const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
@@ -246,43 +179,33 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileI
 
         // Update progress
         completedChunks++
-        updateProgress()
+        updateFileProgress(fileItem, completedChunks, totalChunks)
     }
 
     // Initialize progress UI
-    updateProgress()
+    updateFileProgress(fileItem, completedChunks, totalChunks)
 
     // Upload chunks in parallel with concurrency limit
-    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT_UPLOADS)
+    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT)
 
     // Finalize (merge chunks)
     await finalizeFile(token, relativePath);
 }
 
 async function uploadChunk(token, formData, chunkIndex, relativePath, maxRetries = 3) {
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-            const response = await fetch(`/receive/${token}/chunk`, {
-                method: 'POST',
-                body: formData
-            });
-            
-            if (response.ok) {
-                console.log(`Chunk ${chunkIndex} of ${relativePath} GOOD`);
-                return;
-            }
-            
-            throw new Error(`Upload failed: ${response.status}`);
-        } catch (e) {
-            if (attempt === maxRetries - 1) {
-                console.error(`Failed to upload chunk ${chunkIndex} of ${relativePath}:`, e);
-                throw e;
-            }
-            // Exponential backoff: 1s, 2s, 4s
-            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
-            console.log(`Retrying chunk ${chunkIndex} (attempt ${attempt + 2}/${maxRetries})...`);
+    return await retryWithExponentialBackoff(async () => {
+        const response = await fetch(`/receive/${token}/chunk`, {
+            method: 'POST',
+            body: formData
+        })
+
+        if (response.ok) {
+            console.log(`Chunk ${chunkIndex} of ${relativePath} GOOD`)
+            return
         }
-    }
+
+        throw new Error(`Upload failed: ${response.status}`)
+    }, maxRetries, `chunk ${chunkIndex}`)
 }
 
 async function finalizeFile(token, relativePath) {
@@ -297,8 +220,6 @@ async function finalizeFile(token, relativePath) {
     if (!response.ok) {
         throw new Error(`Failed to finalize ${relativePath}`);
     }
-    
-    console.log(`✓ Completed: ${relativePath}`);
 }
 
 

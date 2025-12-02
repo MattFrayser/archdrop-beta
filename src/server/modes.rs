@@ -1,35 +1,49 @@
 use super::utils;
-use crate::server::state::{ServerInstance, SessionContext};
+use crate::server::state::ServerInstance;
 use crate::server::ServerDirection;
 use crate::tunnel::CloudflareTunnel;
 use crate::ui::{output, qr};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 enum Protocol {
     Https,
     Http,
 }
 pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
-    let server_context = server.context.clone();
-    let (port, server_handle) = start_local_server(server, Protocol::Https).await?;
-
     let service = direction_to_str(direction);
 
+    // Clone what we need before consuming server
+    let session = server.session.clone();
+    let display_name = server.display_name.clone();
+    let progress_receiver = server.progress_receiver();
+
+    let (port, server_handle) = start_local_server(server, Protocol::Https).await?;
+
+    let base_url = format!("https://127.0.0.1:{}", port);
     let url = format!(
-        "https://127.0.0.1:{}/{}/{}#key={}&nonce={}",
-        port, service, server_context.token, server_context.session_key, server_context.nonce
+        "{}/{}/{}#key={}&nonce={}",
+        base_url,
+        service,
+        session.token(),
+        session.session_key_b64(),
+        session.session_nonce_b64()
     );
+
     println!("{}", url);
 
-    run_session(server_handle, server_context, url, service).await?;
+    run_session(server_handle, display_name, progress_receiver, url, service).await?;
     Ok(port)
 }
 
 pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
-    // Start local HTTP
-    let server_context = server.context.clone();
+    let service = direction_to_str(direction);
+
+    // Clone what we need before consuming server
+    let session = server.session.clone();
+    let display_name = server.display_name.clone();
+    let progress_receiver = server.progress_receiver();
+
     let (port, server_handle) = start_local_server(server, Protocol::Http).await?;
 
     // Start tunnel
@@ -37,17 +51,19 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
         .await
         .context("Failed to establish Cloudflare tunnel")?;
 
-    let service = direction_to_str(direction);
-
     // Ensure tunnel URL doesn't have trailing slash
     let tunnel_url = tunnel.url().trim_end_matches('/');
     let url = format!(
         "{}/{}/{}#key={}&nonce={}",
-        tunnel_url, service, server_context.token, server_context.session_key, server_context.nonce
+        tunnel_url,
+        service,
+        session.token(),
+        session.session_key_b64(),
+        session.session_nonce_b64()
     );
     println!("{}", url);
 
-    run_session(server_handle, server_context, url, service).await?;
+    run_session(server_handle, display_name, progress_receiver, url, service).await?;
 
     // Drop tunnel explicitly to ensure cleanup
     // Give a moment for cleanup
@@ -105,7 +121,8 @@ async fn start_local_server(
         }
     }
 
-    utils::wait_for_server_ready(port, 5, false)
+    let use_https = matches!(protocol, Protocol::Https);
+    utils::wait_for_server_ready(port, 5, use_https)
         .await
         .context("Server failed to become ready")?;
     output::spinner_success(&spinner, &format!("Server ready on port {}", port));
@@ -115,15 +132,16 @@ async fn start_local_server(
 
 async fn run_session(
     server_handle: axum_server::Handle,
-    context: Arc<SessionContext>,
+    display_name: String,
+    progress_receiver: tokio::sync::watch::Receiver<f64>,
     url: String,
     service: &str,
 ) -> Result<()> {
     // Spawn TUI and get handle
     let qr_code = qr::generate_qr(&url)?;
     let tui_handle = utils::spawn_tui(
-        context.progress_receiver.clone(),
-        context.display_name.clone(),
+        progress_receiver,
+        display_name,
         qr_code,
         service == "upload",
     );
