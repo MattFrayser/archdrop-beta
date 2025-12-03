@@ -117,106 +117,116 @@ async function uploadFiles(selectedFiles) {
     })
 
     try {
-        const { key, _ } = await getCredentialsFromUrl()
+        const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
-        for (let i = 0; i < selectedFiles.length; i++) {
-            const file = selectedFiles[i]
-            const relativePath = file.webkitRelativePath || file.name;
-            const fileItem = fileItems[i]
+        await runWithConcurrency(
+            selectedFiles.map((file, index) => ({ file, index, fileItem: fileItems[index] })),
+            async ({ file, fileItem }) => {
+                const relativePath = file.webkitRelativePath || file.name
+                
+                fileItem.classList.add('uploading')
+                try {
+                    await uploadFile(token, file, relativePath, key, fileItem)
+                    fileItem.classList.remove('uploading')
+                    fileItem.classList.add('completed')
+                } catch (error) {
+                    fileItem.classList.remove('uploading')
+                    fileItem.classList.add('error')
+                    throw error
+                }
+            },
+            MAX_CONCURRENT_FILES
+        )
 
-            fileItem.classList.add('uploading')
-            await uploadSingleFile(file, relativePath, token, key, fileItem);
-            fileItem.classList.remove('uploading')
-            fileItem.classList.add('completed')
-        }
-        await fetch(`/receive/${token}/complete`)
+        const clientId = getClientId()
+        await fetch(`/receive/${token}/complete?clientId=${clientId}`, { method: 'POST' })
 
         uploadBtn.textContent = 'Upload Complete!'
-    } catch (error) {
+
+    } catch(error) {
+        console.error(error)
         alert(`Upload failed: ${error.message}`)
         uploadBtn.disabled = false
+        uploadBtn.textContent = selectedFiles.length === 1 ? 'Retry Upload' : 'Retry Uploads'
     }
 }
 
-async function uploadSingleFile(file, relativePath, token, key, fileItem) {
+async function uploadFile(file, relativePath, token, key, fileItem) {
     // each file gets its own nonce
     const fileNonce = crypto.getRandomValues(new Uint8Array(7));
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-
 
     console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
 
     // Track completed chunks for progress
     let completedChunks = 0
 
-    // Prepare all chunk upload tasks
-    const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i)
+    await runWithConcurrency(
+        Array.from({ length: totalChunks }, (_, i) => i),
+        async (chunkIndex) => {
+            const start = chunkIndex * CHUNK_SIZE
+            const end = Math.min(start + CHUNK_SIZE, file.size)
+            const chunkBlob = file.slice(start, end)
+            const chunkData = await chunkBlob.arrayBuffer()
 
-    // Process chunk upload
-    const processChunk = async (chunkIndex) => {
-        const start = chunkIndex * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, file.size)
-        const chunkBlob = file.slice(start, end)
-        const chunkData = await chunkBlob.arrayBuffer()
+            // Encrypt chunk
+            const nonce = generateNonce(fileNonce, chunkIndex)
+            const encrypted = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: nonce },
+                key,
+                chunkData
+            )
 
-        // Encrypt chunk
-        const nonce = generateNonce(fileNonce, chunkIndex);
-        const encrypted = await crypto.subtle.encrypt(
-            { name: 'AES-GCM', iv: nonce },
-            key,
-            chunkData
-        );
+            // Create FormData with chunk and metadata
+            const formData = new FormData()
+            formData.append('chunk', new Blob([encrypted]))
+            formData.append('relativePath', relativePath)
+            formData.append('fileName', file.name)
+            formData.append('chunkIndex', chunkIndex.toString())
+            formData.append('totalChunks', totalChunks.toString())
+            formData.append('fileSize', file.size.toString())
+            formData.append('clientId', getClientId())  // ← FIX: Add clientId to FormData
 
-        // Create FormData with chunk and metadata
-        const formData = new FormData();
-        formData.append('chunk', new Blob([encrypted]));
-        formData.append('relativePath', relativePath);
-        formData.append('fileName', file.name);
-        formData.append('chunkIndex', chunkIndex.toString());
-        formData.append('totalChunks', totalChunks.toString());
-        formData.append('fileSize', file.size.toString());
+            if (chunkIndex === 0) {
+                const nonceBase64 = arrayBufferToBase64(fileNonce)
+                formData.append('nonce', nonceBase64)
+            }
 
-        if (chunkIndex === 0) {
-            const nonceBase64 = arrayBufferToBase64(fileNonce);
-            formData.append('nonce', nonceBase64);
-        }
+            // Upload chunk
+            await uploadChunk(token, formData, chunkIndex, relativePath)
 
-        // Upload chunk
-        await uploadChunk(token, formData, chunkIndex, relativePath);
+            // Update progress
+            completedChunks++
+            updateFileProgress(fileItem, completedChunks, totalChunks)
+        },
+        MAX_CONCURRENT
+    )    // Finalize (merge chunks)
 
-        // Update progress
-        completedChunks++
-        updateFileProgress(fileItem, completedChunks, totalChunks)
-    }
-
-    // Initialize progress UI
-    updateFileProgress(fileItem, completedChunks, totalChunks)
-
-    // Upload chunks in parallel with concurrency limit
-    await runWithConcurrency(chunkIndexes, processChunk, MAX_CONCURRENT)
-
-    // Finalize (merge chunks)
     await finalizeFile(token, relativePath);
+
+    const progressText = fileItem.querySelector('.progress-text')
+    if (progressText) progressText.textContent = 'Upload complete!'
 }
 
-async function uploadChunk(token, formData, chunkIndex, relativePath, maxRetries = 3) {
+async function uploadChunk(token, formData, chunkIndex, relativePath) {
     const clientId = getClientId()
-
     const url = `/receive/${token}/chunk?clientId=${clientId}`
+
     return await retryWithExponentialBackoff(async () => {
         const response = await fetch(url, {
             method: 'POST',
             body: formData
         })
 
-        if (response.ok) {
-            console.log(`Chunk ${chunkIndex} of ${relativePath} GOOD`)
-            return
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
         }
-
-        throw new Error(`Upload failed: ${response.status}`)
-    }, maxRetries, `chunk ${chunkIndex}`)
+        
+        // Log success (optional, can remove for production)
+        console.log(`✓ Chunk ${chunkIndex} of ${relativePath}`)
+        
+    }, 3, `chunk ${chunkIndex}`)
 }
 
 async function finalizeFile(token, relativePath) {

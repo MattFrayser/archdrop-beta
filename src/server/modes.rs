@@ -207,15 +207,15 @@ async fn run_session(
     });
 
     // Wait for TUI to complete OR first Ctrl+C
-    let shutdown_requested = tokio::select! {
+    let (shutdown_requested, tui_already_completed) = tokio::select! {
         _ = &mut tui_handle => {
             tracing::info!("Transfer completed successfully");
-            false  // Normal completion
+            (false, true)  // Normal completion
         }
             // Signal received from Ctrl+C task
         _ = shutdown_rx.recv() => {
             tracing::info!("Shutdown requested via Ctrl+C");
-            true  // Ctrl+C
+            (true, false)  // Ctrl+C
         }
     };
 
@@ -231,18 +231,20 @@ async fn run_session(
             )));
         }
     }
-
-    // stop potential UI block
-    // confirm termination
-    tui_handle.abort();
-    let _ = tui_handle.await;
+    // potentially blocking ui
+    if !tui_already_completed {
+        tracing::debug!("Aborting TUI task");
+        tui_handle.abort();
+        let _ = tui_handle.await;
+    }
 
     // Kill tunnel process if it exists
     if let Some(ref mut t) = tunnel {
-        tracing::debug!("Killing cloudflared child process...");
-        let _ = t.child_process().start_kill();
+        tracing::debug!("Shutting down cloudflared tunnel...");
+        if let Err(e) = t.shutdown().await {
+            tracing::warn!("Error during tunnel shutdown: {}", e);
+        }
     }
-
     //Clean up the Ctrl+C listener task
     ctrl_c_task.abort();
     let _ = ctrl_c_task.await;
