@@ -1,16 +1,23 @@
 use super::utils;
-use crate::server::state::ServerInstance;
+use crate::server::state::{AppState, ServerInstance};
 use crate::server::ServerDirection;
 use crate::tunnel::CloudflareTunnel;
+use crate::types::Nonce;
 use crate::ui::{output, qr};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
+use std::time::Duration;
 
 enum Protocol {
     Https,
     Http,
 }
-pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
+pub async fn start_https(
+    server: ServerInstance,
+    app_state: AppState,
+    direction: ServerDirection,
+    nonce: Nonce,
+) -> Result<u16> {
     let service = direction_to_str(direction);
 
     // Clone needed before consuming server
@@ -27,16 +34,21 @@ pub async fn start_https(server: ServerInstance, direction: ServerDirection) -> 
         service,
         session.token(),
         session.session_key_b64(),
-        session.session_nonce_b64()
+        nonce.to_base64()
     );
 
     println!("{}", url);
 
-    run_session(server_handle, display_name, progress_receiver, url, service).await?;
+    run_session(server_handle, app_state, display_name, progress_receiver, url, service).await?;
     Ok(port)
 }
 
-pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) -> Result<u16> {
+pub async fn start_tunnel(
+    server: ServerInstance,
+    app_state: AppState,
+    direction: ServerDirection,
+    nonce: Nonce,
+) -> Result<u16> {
     let service = direction_to_str(direction);
 
     // Clone what we need before consuming server
@@ -59,11 +71,11 @@ pub async fn start_tunnel(server: ServerInstance, direction: ServerDirection) ->
         service,
         session.token(),
         session.session_key_b64(),
-        session.session_nonce_b64()
+        nonce.to_base64()
     );
     println!("{}", url);
 
-    run_session(server_handle, display_name, progress_receiver, url, service).await?;
+    run_session(server_handle, app_state, display_name, progress_receiver, url, service).await?;
 
     // Drop tunnel explicitly to ensure cleanup
     // Give a moment for cleanup
@@ -132,6 +144,7 @@ async fn start_local_server(
 
 async fn run_session(
     server_handle: axum_server::Handle,
+    app_state: AppState,
     display_name: String,
     progress_receiver: tokio::sync::watch::Receiver<f64>,
     url: String,
@@ -152,10 +165,41 @@ async fn run_session(
         _ = tokio::signal::ctrl_c() => {}
     }
 
-    // Graceful shutdown
+    // Graceful shutdown with 10 second grace period
+    const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
+
+    // Stop accepting new connections
     server_handle.shutdown();
 
+    // Give active transfers time to complete
+    tracing::info!("Shutting down gracefully ({}s timeout)...", SHUTDOWN_TIMEOUT_SECS);
+    tokio::time::sleep(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS)).await;
+
+    // Clean up session maps
+    cleanup_sessions(&app_state).await;
+
+    tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+/// Clean up all active sessions, triggering Drop cleanup for incomplete transfers
+async fn cleanup_sessions(state: &AppState) {
+    let receive_count = state.receive_sessions.len();
+    let send_count = state.send_sessions.len();
+
+    if receive_count > 0 || send_count > 0 {
+        tracing::info!(
+            "Cleaning up {} receive session(s) and {} send session(s)",
+            receive_count,
+            send_count
+        );
+    }
+
+    // Clear maps - ChunkStorage::Drop automatically deletes incomplete files
+    state.receive_sessions.clear();
+    state.send_sessions.clear();
+
+    tracing::debug!("Session cleanup complete");
 }
 
 fn direction_to_str(direction: ServerDirection) -> &'static str {

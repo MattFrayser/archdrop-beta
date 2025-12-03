@@ -3,7 +3,7 @@
 // RAII guard is used for cleanups on Error
 
 use aes_gcm::Aes256Gcm;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::SeekFrom;
@@ -34,7 +34,11 @@ impl ChunkStorage {
             .write(true)
             .create(true)
             .open(&dest_path)
-            .await?;
+            .await
+            .context(format!(
+                "Failed to create storage file: {}",
+                dest_path.display()
+            ))?;
 
         Ok(Self {
             file,
@@ -68,7 +72,11 @@ impl ChunkStorage {
         self.file.seek(SeekFrom::Start(offset)).await?;
 
         // Write & mark received
-        self.file.write_all(&decrypted).await?;
+        self.file.write_all(&decrypted).await.context(format!(
+            "Failed to write chunk {} at offset {}",
+            chunk_index, offset
+        ))?;
+
         self.chunks_received.insert(chunk_index);
 
         Ok(())
@@ -104,9 +112,14 @@ impl ChunkStorage {
 impl Drop for ChunkStorage {
     fn drop(&mut self) {
         if !self.disarmed {
-            // drop must be sync
-            // acceptable for error path
-            let _ = std::fs::remove_file(&self.path);
+            let path = self.path.clone();
+
+            // new thread for blocking io
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    eprintln!("Error cleaning up temporary file {}: {}", path.display(), e);
+                }
+            });
         }
     }
 }

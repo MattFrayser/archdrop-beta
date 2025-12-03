@@ -110,17 +110,6 @@ impl ServerInstance {
         }
     }
 
-    pub fn build_url(&self, base_url: &str, service: &str) -> String {
-        format!(
-            "{}/{}/{}#key={}&nonce={}",
-            base_url,
-            service,
-            self.session.token(),
-            self.session.session_key_b64(),
-            self.session.session_nonce_b64()
-        )
-    }
-
     pub fn progress_receiver(&self) -> watch::Receiver<f64> {
         self.progress_sender.subscribe()
     }

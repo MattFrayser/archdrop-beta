@@ -1,7 +1,7 @@
 //==============
 // Constants
 //==============
-const CHUNK_SIZE = 1024 * 1024 // 1MB (increased from 64KB for better throughput)
+const CHUNK_SIZE = __CHUNK_SIZE__ // Run time injected from server
 const MAX_MEMORY = 100 * 1024 * 1024 // 100MB
 const MAX_CONCURRENT = 8 // Parallel chunk limit (default)
 const MAX_CONCURRENT_DOWNLOADS = 8 // Parallel chunk download limit
@@ -99,13 +99,6 @@ function concatArrays(...arrays) {
         offset += arr.length;
     }
     return result;
-}
-
-async function calculateHash(data) {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-    return hashHex
 }
 
 //=============

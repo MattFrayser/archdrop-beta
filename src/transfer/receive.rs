@@ -3,9 +3,15 @@ use crate::transfer::storage::ChunkStorage;
 use crate::transfer::util::{hash_path, validate_path, AppError};
 use crate::types::Nonce;
 use anyhow::{Context, Result};
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::Json;
 use serde_json::{json, Value};
+
+#[derive(serde::Deserialize)]
+pub struct ClientIdParam {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+}
 
 pub async fn receive_handler(
     Path(token): Path<String>,
@@ -14,6 +20,7 @@ pub async fn receive_handler(
 ) -> Result<axum::Json<Value>, AppError> {
     // Parse upload
     let chunk = parse_chunk_upload(multipart).await?;
+    let client_id = &chunk.client_id;
 
     // Get or create session
     let file_id = hash_path(&chunk.relative_path);
@@ -23,12 +30,12 @@ pub async fn receive_handler(
 
     if is_new_file && chunk.chunk_index == 0 {
         // First chunk of a new file - need either initial claim or active session
-        if !state.session.is_active(&token) && !state.session.claim(&token) {
+        if !state.session.claim(&token, client_id) {
             return Err(anyhow::anyhow!("Invalid token").into());
         }
     } else {
         // For other chunks, check if active
-        if !state.session.is_active(&token) {
+        if !state.session.is_active(&token, client_id) {
             return Err(anyhow::anyhow!("Invalid or inactive session").into());
         }
     }
@@ -37,21 +44,19 @@ pub async fn receive_handler(
     let session_exits = state.receive_sessions.contains_key(&file_id);
 
     if !session_exits {
-        let receive_session = state
+        let destination = state
             .session
-            .as_receive()
-            .expect("Not a receive session");
-
-        let destination = receive_session.destination().clone();
+            .destination()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Invalid session type"))?;
 
         // Validate provided path and join to base
         validate_path(&chunk.relative_path).context("Invalid file path")?;
         let dest_path = destination.join(&chunk.relative_path);
 
-        // create storage
         let storage = ChunkStorage::new(dest_path)
             .await
-            .expect("Failed to create chunk storage");
+            .context("Failed to create storage")?;
 
         state.receive_sessions.insert(
             file_id.clone(),
@@ -68,7 +73,7 @@ pub async fn receive_handler(
     let mut session = state
         .receive_sessions
         .get_mut(&file_id)
-        .expect("Session should exist");
+        .ok_or_else(|| anyhow::anyhow!("Invalid session"))?;
 
     // Update nonce if provided (chunk 0 contains the nonce)
     if let Some(ref nonce_str) = chunk.nonce {
@@ -108,6 +113,7 @@ pub async fn receive_handler(
 }
 pub async fn finalize_upload(
     Path(token): Path<String>,
+    Query(params): Query<ClientIdParam>,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<axum::Json<Value>, AppError> {
@@ -121,8 +127,9 @@ pub async fn finalize_upload(
     }
     let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
 
+    let client_id = &params.client_id;
     // Validate token
-    if !state.session.is_active(&token) {
+    if !state.session.is_active(&token, client_id) {
         return Err(anyhow::anyhow!("Invalid token").into());
     }
 
@@ -156,9 +163,10 @@ pub async fn finalize_upload(
 
 pub async fn complete_transfer(
     Path(token): Path<String>,
+    Query(params): Query<ClientIdParam>,
     State(state): State<AppState>,
 ) -> Result<axum::Json<Value>, AppError> {
-    state.session.complete(&token);
+    state.session.complete(&token, &params.client_id);
 
     let _ = state.progress_sender.send(100.0);
 
@@ -170,21 +178,21 @@ pub async fn complete_transfer(
 async fn parse_chunk_upload(mut multipart: Multipart) -> anyhow::Result<ChunkUpload> {
     let mut chunk_data = None;
     let mut relative_path = None;
-    let mut file_name = None;
     let mut chunk_index = None;
     let mut total_chunks = None;
     let mut file_size = None;
     let mut nonce = None;
+    let mut client_id = None;
 
     while let Some(field) = multipart.next_field().await? {
         match field.name() {
             Some("chunk") => chunk_data = Some(field.bytes().await?.to_vec()),
             Some("relativePath") => relative_path = Some(field.text().await?),
-            Some("fileName") => file_name = Some(field.text().await?),
             Some("chunkIndex") => chunk_index = Some(field.text().await?.parse()?),
             Some("totalChunks") => total_chunks = Some(field.text().await?.parse()?),
             Some("fileSize") => file_size = Some(field.text().await?.parse()?),
             Some("nonce") => nonce = Some(field.text().await?),
+            Some("clientId") => client_id = Some(field.text().await?),
             _ => {}
         }
     }
@@ -192,20 +200,20 @@ async fn parse_chunk_upload(mut multipart: Multipart) -> anyhow::Result<ChunkUpl
     Ok(ChunkUpload {
         data: chunk_data.ok_or_else(|| anyhow::anyhow!("Missing chunk"))?,
         relative_path: relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?,
-        file_name: file_name.ok_or_else(|| anyhow::anyhow!("Missing fileName"))?,
         chunk_index: chunk_index.ok_or_else(|| anyhow::anyhow!("Missing chunkIndex"))?,
         total_chunks: total_chunks.ok_or_else(|| anyhow::anyhow!("Missing totalChunks"))?,
         file_size: file_size.ok_or_else(|| anyhow::anyhow!("Missing fileSize"))?,
         nonce,
+        client_id: client_id.ok_or_else(|| anyhow::anyhow!("Missing clientId"))?,
     })
 }
 
 pub struct ChunkUpload {
     pub data: Vec<u8>,
     pub relative_path: String,
-    pub file_name: String,
     pub chunk_index: usize,
     pub total_chunks: usize,
     pub file_size: u64,
     pub nonce: Option<String>,
+    pub client_id: String,
 }

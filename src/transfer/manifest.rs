@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -29,7 +29,9 @@ impl Manifest {
             base_path.unwrap_or_else(|| file_paths[0].parent().unwrap_or_else(|| Path::new("")));
 
         for (index, path) in file_paths.iter().enumerate() {
-            let metadata = tokio::fs::metadata(path).await?;
+            let metadata = tokio::fs::metadata(path)
+                .await
+                .context(format!("Failed to read metadata for: {}", path.display()))?;
 
             let relative = path
                 .strip_prefix(base)

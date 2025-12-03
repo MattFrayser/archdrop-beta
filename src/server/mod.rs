@@ -26,12 +26,14 @@ pub enum ServerDirection {
 
 async fn start_server(
     server: state::ServerInstance,
+    app_state: state::AppState,
     mode: ServerMode,
     direction: ServerDirection,
+    nonce: Nonce,
 ) -> Result<u16> {
     match mode {
-        ServerMode::Local => modes::start_https(server, direction).await,
-        ServerMode::Tunnel => modes::start_tunnel(server, direction).await,
+        ServerMode::Local => modes::start_https(server, app_state, direction, nonce).await,
+        ServerMode::Tunnel => modes::start_tunnel(server, app_state, direction, nonce).await,
     }
 }
 
@@ -51,8 +53,7 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
     };
 
     // Send specific session
-    let (send_session, _token) = session::SendSession::new(manifest.clone(), session_key, nonce);
-    let session = session::Session::Send(send_session);
+    let session = session::Session::new_send(manifest.clone(), session_key);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_send(session.clone(), progress_sender.clone());
@@ -72,16 +73,11 @@ pub async fn start_send_server(manifest: Manifest, mode: ServerMode) -> Result<u
         .route("/download.js", get(web::serve_download_js))
         .route("/styles.css", get(web::serve_shared_css))
         .route("/shared.js", get(web::serve_shared_js))
-        .with_state(state);
+        .with_state(state.clone());
 
-    let server = ServerInstance::new(
-        app,
-        session,
-        display_name,
-        progress_sender,
-    );
+    let server = ServerInstance::new(app, session, display_name, progress_sender);
 
-    start_server(server, mode, ServerDirection::Send).await
+    start_server(server, state, mode, ServerDirection::Send, nonce).await
 }
 
 //----------------
@@ -100,8 +96,7 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .to_string();
 
     // Receive specific session
-    let (receive_session, _token) = session::ReceiveSession::new(destination.clone(), session_key, nonce);
-    let session = session::Session::Receive(receive_session);
+    let session = session::Session::new_receive(destination.clone(), session_key);
     let (progress_sender, _) = tokio::sync::watch::channel(0.0);
 
     let state = AppState::new_receive(session.clone(), progress_sender.clone());
@@ -117,14 +112,9 @@ pub async fn start_receive_server(destination: PathBuf, mode: ServerMode) -> Res
         .route("/upload.js", get(web::serve_upload_js))
         .route("/styles.css", get(web::serve_shared_css))
         .route("/shared.js", get(web::serve_shared_js))
-        .with_state(state);
+        .with_state(state.clone());
 
-    let server = ServerInstance::new(
-        app,
-        session,
-        display_name,
-        progress_sender,
-    );
+    let server = ServerInstance::new(app, session, display_name, progress_sender);
 
-    start_server(server, mode, ServerDirection::Receive).await
+    start_server(server, state, mode, ServerDirection::Receive, nonce).await
 }

@@ -117,7 +117,7 @@ async function uploadFiles(selectedFiles) {
     })
 
     try {
-        const { key, nonceBase } = await getCredentialsFromUrl()
+        const { key, _ } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
         for (let i = 0; i < selectedFiles.length; i++) {
@@ -126,7 +126,7 @@ async function uploadFiles(selectedFiles) {
             const fileItem = fileItems[i]
 
             fileItem.classList.add('uploading')
-            await uploadSingleFile(file, relativePath, token, key, nonceBase, fileItem);
+            await uploadSingleFile(file, relativePath, token, key, fileItem);
             fileItem.classList.remove('uploading')
             fileItem.classList.add('completed')
         }
@@ -139,8 +139,11 @@ async function uploadFiles(selectedFiles) {
     }
 }
 
-async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileItem) {
+async function uploadSingleFile(file, relativePath, token, key, fileItem) {
+    // each file gets its own nonce
+    const fileNonce = crypto.getRandomValues(new Uint8Array(7));
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+
 
     console.log(`Uploading: ${relativePath} (${totalChunks} chunks)`);
 
@@ -158,7 +161,7 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileI
         const chunkData = await chunkBlob.arrayBuffer()
 
         // Encrypt chunk
-        const nonce = generateNonce(nonceBase, chunkIndex);
+        const nonce = generateNonce(fileNonce, chunkIndex);
         const encrypted = await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv: nonce },
             key,
@@ -175,7 +178,7 @@ async function uploadSingleFile(file, relativePath, token, key, nonceBase, fileI
         formData.append('fileSize', file.size.toString());
 
         if (chunkIndex === 0) {
-            const nonceBase64 = arrayBufferToBase64(nonceBase);
+            const nonceBase64 = arrayBufferToBase64(fileNonce);
             formData.append('nonce', nonceBase64);
         }
 
