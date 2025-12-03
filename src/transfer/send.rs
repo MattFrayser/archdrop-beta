@@ -1,6 +1,7 @@
 use std::io::SeekFrom;
 
-use crate::server::state::{AppState, ChunkSendSession};
+use crate::server::state::AppState;
+use crate::transfer::chunk::FileSendState;
 use crate::transfer::manifest::Manifest;
 use crate::transfer::util::AppError;
 use crate::types::Nonce;
@@ -65,7 +66,7 @@ pub async fn send_handler(
     state
         .send_sessions
         .entry(file_index)
-        .or_insert_with(|| ChunkSendSession::new(total_chunks));
+        .or_insert_with(|| FileSendState::new(total_chunks));
 
     // Calc chunk boundries
     let start = chunk_index as u64 * CHUNK_SIZE;
@@ -169,7 +170,7 @@ pub async fn get_file_hash(
         .entry(file_index)
         .and_modify(|s| s.finalized_hash = Some(hash.clone()))
         .or_insert_with(|| {
-            let mut session = ChunkSendSession::new(total_chunks);
+            let mut session = FileSendState::new(total_chunks);
             session.finalized_hash = Some(hash.clone());
             session
         });

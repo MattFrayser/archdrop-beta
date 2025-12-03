@@ -1,6 +1,6 @@
 use super::utils;
-use crate::server::state::{AppState, ServerInstance};
-use crate::server::ServerDirection;
+use crate::server::state::AppState;
+use crate::server::{ServerDirection, ServerInstance};
 use crate::tunnel::CloudflareTunnel;
 use crate::types::Nonce;
 use crate::ui::{output, qr};
@@ -39,7 +39,15 @@ pub async fn start_https(
 
     println!("{}", url);
 
-    run_session(server_handle, app_state, display_name, progress_receiver, url, service).await?;
+    run_session(
+        server_handle,
+        app_state,
+        display_name,
+        progress_receiver,
+        url,
+        service,
+    )
+    .await?;
     Ok(port)
 }
 
@@ -75,7 +83,15 @@ pub async fn start_tunnel(
     );
     println!("{}", url);
 
-    run_session(server_handle, app_state, display_name, progress_receiver, url, service).await?;
+    run_session(
+        server_handle,
+        app_state,
+        display_name,
+        progress_receiver,
+        url,
+        service,
+    )
+    .await?;
 
     // Drop tunnel explicitly to ensure cleanup
     // Give a moment for cleanup
@@ -172,7 +188,10 @@ async fn run_session(
     server_handle.shutdown();
 
     // Give active transfers time to complete
-    tracing::info!("Shutting down gracefully ({}s timeout)...", SHUTDOWN_TIMEOUT_SECS);
+    tracing::info!(
+        "Shutting down gracefully ({}s timeout)...",
+        SHUTDOWN_TIMEOUT_SECS
+    );
     tokio::time::sleep(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS)).await;
 
     // Clean up session maps

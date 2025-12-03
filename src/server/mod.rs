@@ -4,7 +4,8 @@ pub mod state;
 pub mod utils;
 pub mod web;
 
-use crate::server::state::{AppState, ServerInstance};
+use crate::server::session::Session;
+use crate::server::state::AppState;
 use crate::transfer::{manifest::Manifest, receive, send};
 use crate::types::{EncryptionKey, Nonce};
 use anyhow::Result;
@@ -13,6 +14,7 @@ use axum::{
     Router,
 };
 use std::path::PathBuf;
+use tokio::sync::watch;
 
 pub enum ServerMode {
     Local,
@@ -24,9 +26,37 @@ pub enum ServerDirection {
     Receive,
 }
 
+// Server config and runtime state
+pub struct ServerInstance {
+    pub app: Router,
+    pub session: Session,
+    pub display_name: String,
+    pub progress_sender: watch::Sender<f64>,
+}
+
+impl ServerInstance {
+    pub fn new(
+        app: Router,
+        session: Session,
+        display_name: String,
+        progress_sender: watch::Sender<f64>,
+    ) -> Self {
+        Self {
+            app,
+            session,
+            display_name,
+            progress_sender,
+        }
+    }
+
+    pub fn progress_receiver(&self) -> watch::Receiver<f64> {
+        self.progress_sender.subscribe()
+    }
+}
+
 async fn start_server(
-    server: state::ServerInstance,
-    app_state: state::AppState,
+    server: ServerInstance,
+    app_state: AppState,
     mode: ServerMode,
     direction: ServerDirection,
     nonce: Nonce,

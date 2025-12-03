@@ -1,4 +1,5 @@
-use crate::server::state::{AppState, ChunkReceiveSession};
+use crate::server::state::AppState;
+use crate::transfer::chunk::FileReceiveState;
 use crate::transfer::storage::ChunkStorage;
 use crate::transfer::util::{hash_path, validate_path, AppError};
 use crate::types::Nonce;
@@ -60,7 +61,7 @@ pub async fn receive_handler(
 
         state.receive_sessions.insert(
             file_id.clone(),
-            ChunkReceiveSession {
+            FileReceiveState {
                 storage,
                 total_chunks: chunk.total_chunks,
                 nonce: chunk.nonce.clone().unwrap_or_default(),
