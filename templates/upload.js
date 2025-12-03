@@ -127,7 +127,7 @@ async function uploadFiles(selectedFiles) {
                 
                 fileItem.classList.add('uploading')
                 try {
-                    await uploadFile(token, file, relativePath, key, fileItem)
+                    await uploadFile(file, relativePath, token, key, fileItem)
                     fileItem.classList.remove('uploading')
                     fileItem.classList.add('completed')
                 } catch (error) {
