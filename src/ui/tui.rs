@@ -17,6 +17,7 @@ pub struct TransferUI {
     file_name: String,
     qr_code: String,
     is_recieving: bool,
+    status_message: watch::Receiver<Option<String>>,
 }
 
 impl TransferUI {
@@ -25,12 +26,14 @@ impl TransferUI {
         file_name: String,
         qr_code: String,
         is_recieving: bool,
+        status_message: watch::Receiver<Option<String>>,
     ) -> Self {
         Self {
             progress,
             file_name,
             qr_code,
             is_recieving,
+            status_message,
         }
     }
 
@@ -44,9 +47,10 @@ impl TransferUI {
 
         loop {
             let progress = *self.progress.borrow();
+            let status_msg = self.status_message.borrow().clone();
 
             terminal.draw(|f| {
-                self.render_layout(f, progress);
+                self.render_layout(f, progress, status_msg.as_deref());
             })?;
 
             // Check for keypresses
@@ -71,23 +75,37 @@ impl TransferUI {
     }
 
     // Render layout with correct format for size of terminal
-    fn render_layout(&self, f: &mut Frame, progress: f64) {
+    fn render_layout(&self, f: &mut Frame, progress: f64, status_msg: Option<&str>) {
         let width = f.size().width;
 
         match width {
-            w if w >= 112 => self.render_wide(f, progress),
-            w if w >= 65 => self.render_medium(f, progress),
-            _ => self.render_compact(f, progress),
+            w if w >= 112 => self.render_wide(f, progress, status_msg),
+            w if w >= 65 => self.render_medium(f, progress, status_msg),
+            _ => self.render_compact(f, progress, status_msg),
         }
     }
 
-    fn render_wide(&self, f: &mut Frame, progress: f64) {
+    fn render_wide(&self, f: &mut Frame, progress: f64, status_msg: Option<&str>) {
+        let main_layout = if status_msg.is_some() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Min(0), Constraint::Length(3)])
+                .split(f.size())
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Percentage(100)])
+                .split(f.size())
+        };
+
+        let content_area = main_layout[0];
+
         // Original layout: side-by-side with full ASCII logo
         let sides = Layout::default()
             .direction(Direction::Horizontal)
             .margin(2)
             .constraints(vec![Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(f.size());
+            .split(content_area);
 
         let left_sections = Layout::default()
             .direction(Direction::Vertical)
@@ -107,18 +125,18 @@ impl TransferUI {
         // Full ASCII logo
         let logo = Paragraph::new(
             r#"
-   _____               .__    
-  /  _  \______   ____ |  |__ 
- /  /_\  \  __ \_/ ___\|  |  \ 
+   _____               .__
+  /  _  \______   ____ |  |__
+ /  /_\  \  __ \_/ ___\|  |  \
 /    |    \ | \/\  \___|   Y  \
 \____|__  /_|    \___  >___|  /
-        \/           \/     \/ 
-             ________                               
-             \______ \_______  ____ ______  
-              |    |  \_  __ \/  _ \\____ \ 
+        \/           \/     \/
+             ________
+             \______ \_______  ____ ______
+              |    |  \_  __ \/  _ \\____ \
               |    `   \  | \(  <_> )  |_> |
-              L______  /__|   \____/|   __/ 
-                     \/             |__|    
+              L______  /__|   \____/|   __/
+                     \/             |__|
 
             "#,
         )
@@ -128,9 +146,26 @@ impl TransferUI {
         self.render_file_widget(f, left_content[0]);
         self.render_progress_widget(f, progress, left_content[1]);
         self.render_qr_widget(f, sides[1]);
+
+        // Render status message at bottom if present
+        if let Some(msg) = status_msg {
+            self.render_status_widget(f, msg, main_layout[1]);
+        }
     }
 
-    fn render_medium(&self, f: &mut Frame, progress: f64) {
+    fn render_medium(&self, f: &mut Frame, progress: f64, status_msg: Option<&str>) {
+        let main_layout = if status_msg.is_some() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Min(0), Constraint::Length(3)])
+                .split(f.size())
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Percentage(100)])
+                .split(f.size())
+        };
+
         // Full vertical stack - single column
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -141,7 +176,7 @@ impl TransferUI {
                 Constraint::Length(3),  // Progress
                 Constraint::Min(15),    // QR (goes at bottom)
             ])
-            .split(f.size());
+            .split(main_layout[0]);
 
         // Minimal title
         // Full ASCII logo
@@ -161,9 +196,26 @@ impl TransferUI {
         self.render_file_widget(f, chunks[1]);
         self.render_progress_widget(f, progress, chunks[2]);
         self.render_qr_widget(f, chunks[3]);
+
+        // Render status message at bottom if present
+        if let Some(msg) = status_msg {
+            self.render_status_widget(f, msg, main_layout[1]);
+        }
     }
 
-    fn render_compact(&self, f: &mut Frame, progress: f64) {
+    fn render_compact(&self, f: &mut Frame, progress: f64, status_msg: Option<&str>) {
+        let main_layout = if status_msg.is_some() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Min(0), Constraint::Length(3)])
+                .split(f.size())
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Percentage(100)])
+                .split(f.size())
+        };
+
         // Full vertical stack - single column
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -174,7 +226,7 @@ impl TransferUI {
                 Constraint::Length(3), // Progress
                 Constraint::Min(15),   // QR (goes at bottom)
             ])
-            .split(f.size());
+            .split(main_layout[0]);
 
         // Minimal title
         let title = Paragraph::new("ArchDrop")
@@ -185,7 +237,13 @@ impl TransferUI {
         self.render_file_widget(f, chunks[1]);
         self.render_progress_widget(f, progress, chunks[2]);
         self.render_qr_widget(f, chunks[3]);
+
+        // Render status message at bottom if present
+        if let Some(msg) = status_msg {
+            self.render_status_widget(f, msg, main_layout[1]);
+        }
     }
+
     //------------
     // Widgets
     //------------
@@ -211,6 +269,19 @@ impl TransferUI {
     fn render_qr_widget(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let widget = Paragraph::new(self.qr_code.clone())
             .block(Block::default().title("Scan").borders(Borders::ALL))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(widget, area);
+    }
+
+    fn render_status_widget(&self, f: &mut Frame, msg: &str, area: ratatui::layout::Rect) {
+        use ratatui::style::{Color, Modifier, Style};
+        let widget = Paragraph::new(msg)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL))
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(widget, area);
     }

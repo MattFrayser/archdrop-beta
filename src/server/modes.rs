@@ -6,7 +6,10 @@ use crate::types::Nonce;
 use crate::ui::{output, qr};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 
 enum Protocol {
     Https,
@@ -42,6 +45,7 @@ pub async fn start_https(
     run_session(
         server_handle,
         app_state,
+        None,
         display_name,
         progress_receiver,
         url,
@@ -86,17 +90,13 @@ pub async fn start_tunnel(
     run_session(
         server_handle,
         app_state,
+        Some(tunnel),
         display_name,
         progress_receiver,
         url,
         service,
     )
     .await?;
-
-    // Drop tunnel explicitly to ensure cleanup
-    // Give a moment for cleanup
-    drop(tunnel);
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     Ok(port)
 }
@@ -161,44 +161,171 @@ async fn start_local_server(
 async fn run_session(
     server_handle: axum_server::Handle,
     app_state: AppState,
+    mut tunnel: Option<CloudflareTunnel>,
     display_name: String,
     progress_receiver: tokio::sync::watch::Receiver<f64>,
     url: String,
     service: &str,
 ) -> Result<()> {
-    // Spawn TUI and get handle
+    //  Status and Shutdown Channels
+    let (status_sender, status_receiver) = tokio::sync::watch::channel(None);
+    let shutdown_init = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown_init.clone();
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+    let tx_for_task = shutdown_tx.clone();
+
+    // Spawn TUI
     let qr_code = qr::generate_qr(&url)?;
-    let tui_handle = utils::spawn_tui(
+    let mut tui_handle = utils::spawn_tui(
         progress_receiver,
         display_name,
         qr_code,
         service == "upload",
+        status_receiver,
     );
 
-    // Wait for TUI to exit or Ctrl+C
-    tokio::select! {
-        _ = tui_handle => {}
-        _ = tokio::signal::ctrl_c() => {}
+    // Spawn Ctrl+C handler with two-stage loop
+    let ctrl_c_task = tokio::spawn(async move {
+        loop {
+            // Wait for Ctrl+C signal
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+
+            if shutdown_clone.load(Ordering::Acquire) {
+                // Second Ctrl+C -> force exit
+                std::process::exit(1);
+            } else {
+                // First Ctrl+C -> initiate graceful shutdown
+                shutdown_clone.store(true, Ordering::Release);
+                // Send signal to the main loop.
+                let _ = tx_for_task.send(());
+
+                // loop here to wait for the second signal
+            }
+        }
+    });
+
+    // Wait for TUI to complete OR first Ctrl+C
+    let shutdown_requested = tokio::select! {
+        _ = &mut tui_handle => {
+            tracing::info!("Transfer completed successfully");
+            false  // Normal completion
+        }
+            // Signal received from Ctrl+C task
+        _ = shutdown_rx.recv() => {
+            tracing::info!("Shutdown requested via Ctrl+C");
+            true  // Ctrl+C
+        }
+    };
+
+    // shutdown warning msg
+    if shutdown_requested {
+        let active_count = count_active_transfers(&app_state);
+
+        if active_count > 0 {
+            // Send the warning to the TUI to be displayed
+            let _ = status_sender.send(Some(format!(
+                "Warning: {} transfer(s) in progress - Press Ctrl+C again to force quit",
+                active_count
+            )));
+        }
     }
 
-    // Graceful shutdown with 10 second grace period
-    const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
+    // stop potential UI block
+    // confirm termination
+    tui_handle.abort();
+    let _ = tui_handle.await;
 
+    // Kill tunnel process if it exists
+    if let Some(ref mut t) = tunnel {
+        tracing::debug!("Killing cloudflared child process...");
+        let _ = t.child_process().start_kill();
+    }
+
+    //Clean up the Ctrl+C listener task
+    ctrl_c_task.abort();
+    let _ = ctrl_c_task.await;
+
+    shutdown(server_handle, app_state, shutdown_init, status_sender).await?;
+
+    Ok(())
+}
+
+//==========
+// SHUTDOWN
+//==========
+enum ShutdownResult {
+    Completed,
+    Forced,
+}
+
+async fn shutdown(
+    server_handle: axum_server::Handle,
+    app_state: AppState,
+    force_exit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    status_sender: tokio::sync::watch::Sender<Option<String>>,
+) -> Result<()> {
     // Stop accepting new connections
     server_handle.shutdown();
+    tracing::info!("Server stopped accepting new connections");
 
-    // Give active transfers time to complete
-    tracing::info!(
-        "Shutting down gracefully ({}s timeout)...",
-        SHUTDOWN_TIMEOUT_SECS
-    );
-    tokio::time::sleep(Duration::from_secs(SHUTDOWN_TIMEOUT_SECS)).await;
+    // Wait for active transfers to complete
+    let result = wait_for_transfers(&app_state, force_exit, status_sender.clone()).await;
 
-    // Clean up session maps
+    // Clear status message before final cleanup
+    let _ = status_sender.send(None);
+
+    match result {
+        ShutdownResult::Completed => {
+            tracing::info!("All transfers completed successfully");
+        }
+        ShutdownResult::Forced => {
+            let remaining = count_active_transfers(&app_state);
+            tracing::warn!("Forced shutdown with {} pending transfers", remaining);
+        }
+    }
+
+    // Clean up sessions
     cleanup_sessions(&app_state).await;
-
     tracing::info!("Server shutdown complete");
+
     Ok(())
+}
+
+async fn wait_for_transfers(
+    state: &AppState,
+    force_exit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    status_sender: tokio::sync::watch::Sender<Option<String>>,
+) -> ShutdownResult {
+    use std::sync::atomic::Ordering;
+
+    let mut last_count = count_active_transfers(state);
+
+    loop {
+        // Check force exit
+        if force_exit.load(Ordering::Acquire) {
+            return ShutdownResult::Forced;
+        }
+
+        // all transfers complete
+        let current_count = count_active_transfers(state);
+        if current_count == 0 {
+            return ShutdownResult::Completed;
+        }
+
+        // Show progress if count changed
+        if current_count != last_count {
+            tracing::info!("{} transfer(s) remaining...", current_count);
+            let _ = status_sender.send(Some(format!(
+                "{} transfer(s) remaining - Press Ctrl+C to force quit",
+                current_count
+            )));
+            last_count = current_count;
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Clean up all active sessions, triggering Drop cleanup for incomplete transfers
@@ -219,6 +346,10 @@ async fn cleanup_sessions(state: &AppState) {
     state.send_sessions.clear();
 
     tracing::debug!("Session cleanup complete");
+}
+
+fn count_active_transfers(state: &AppState) -> usize {
+    state.receive_sessions.len() + state.send_sessions.len()
 }
 
 fn direction_to_str(direction: ServerDirection) -> &'static str {

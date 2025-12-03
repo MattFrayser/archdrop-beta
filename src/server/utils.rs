@@ -1,4 +1,4 @@
-use crate::ui::tui::TransferUI;
+use crate::{server::state, ui::tui::TransferUI};
 use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use rcgen::generate_simple_self_signed;
@@ -42,9 +42,10 @@ pub fn spawn_tui(
     file_name: String,
     qr_code: String,
     is_recieving: bool,
+    status_message: watch::Receiver<Option<String>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ui = TransferUI::new(progress, file_name, qr_code, is_recieving);
+        let mut ui = TransferUI::new(progress, file_name, qr_code, is_recieving, status_message);
 
         if let Err(e) = ui.run().await {
             eprintln!("ui err: {}", e);

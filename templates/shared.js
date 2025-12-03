@@ -73,6 +73,21 @@ function arrayBufferToBase64(buffer) {
     return base64
 }
 
+//===============
+// CLIENT_ID
+//==============
+const CLIENT_ID_KEY = 'archdrop_client_id';
+
+function getClientId() {
+    let clientId = localStorage.getItem(CLIENT_ID_KEY);
+
+    if (!clientId) {
+        clientId = generateUuid();
+        localStorage.setItem(CLIENT_ID_KEY, clientId);
+    }
+    return clientId;
+}
+
 //==============
 // Crypto
 //==============
@@ -88,6 +103,14 @@ function generateNonce(nonceBase64, counter) {
     view.setUint32(7, counter, false) // false = BE32
 
     return nonce
+}
+
+function generateUuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0,
+            v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
 }
 
 function concatArrays(...arrays) {

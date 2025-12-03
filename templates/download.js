@@ -31,7 +31,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Load manifest and display files
     try {
         const token = window.location.pathname.split('/').pop()
-        const manifestResponse = await fetch(`/send/${token}/manifest`)
+        const clientId = getClientId()
+        const manifestResponse = await fetch(`/send/${token}/manifest?clientId=${clientId}`)
         if (manifestResponse.ok) {
             const manifest = await manifestResponse.json()
             displayFileList(manifest.files)
@@ -249,7 +250,8 @@ async function verifyHash(blob, fileEntry, token) {
         .join('')
 
     // Request hash from server
-    const response = await fetch(`/send/${token}/${fileEntry.index}/hash`)
+    const clientId = getClientId()
+    const response = await fetch(`/send/${token}/${fileEntry.index}/hash?clientId=${clientId}`)
     if (!response.ok) {
         console.warn(`Could not verify ${fileEntry.name}: ${response.status}`)
         return // Skip if hash unavailable
@@ -265,8 +267,10 @@ async function verifyHash(blob, fileEntry, token) {
 }
 
 async function downloadChunk(token, fileIndex, chunkIndex, maxRetries = 3) {
+    const clientId = getClientId()
+
     return await retryWithExponentialBackoff(async () => {
-        const response = await fetch(`/send/${token}/${fileIndex}/chunk/${chunkIndex}`)
+        const response = await fetch(`/send/${token}/${fileIndex}/chunk/${chunkIndex}?clientId=${clientId}`)
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`)
         }

@@ -86,6 +86,10 @@ impl CloudflareTunnel {
         }
     }
 
+    pub fn child_process(&mut self) -> &mut Child {
+        &mut self.process
+    }
+
     pub fn url(&self) -> &str {
         &self.url
     }

@@ -201,8 +201,11 @@ async function uploadSingleFile(file, relativePath, token, key, fileItem) {
 }
 
 async function uploadChunk(token, formData, chunkIndex, relativePath, maxRetries = 3) {
+    const clientId = getClientId()
+
+    const url = `/receive/${token}/chunk?clientId=${clientId}`
     return await retryWithExponentialBackoff(async () => {
-        const response = await fetch(`/receive/${token}/chunk`, {
+        const response = await fetch(url, {
             method: 'POST',
             body: formData
         })
@@ -220,7 +223,9 @@ async function finalizeFile(token, relativePath) {
     const formData = new FormData();
     formData.append('relativePath', relativePath);
     
-    const response = await fetch(`/receive/${token}/finalize`, {
+    const clientId = getClientId()
+    const url = `/receive/${token}/finalize?clientId=${clientId}`
+    const response = await fetch(url, {
         method: 'POST',
         body: formData
     });
