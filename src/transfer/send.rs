@@ -1,13 +1,14 @@
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 use crate::server::auth;
 use crate::server::state::AppState;
-use crate::transfer::chunk::FileSendState;
+use crate::transfer::io;
 use crate::transfer::manifest::Manifest;
 use crate::transfer::receive::ClientIdParam;
 use crate::transfer::util::AppError;
 use crate::types::Nonce;
-use crate::{config::CHUNK_SIZE, crypto::encrypt_chunk_at_position};
+use crate::{config, crypto};
 use anyhow::{Context, Result};
 use axum::extract::Query;
 use axum::{
@@ -17,7 +18,7 @@ use axum::{
     Json,
 };
 use reqwest::header;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::AsyncReadExt;
 
 #[derive(serde::Deserialize)]
 pub struct ChunkParams {
@@ -53,8 +54,8 @@ pub async fn send_handler(
     // Sessions are claimed by manifest, so just check client
     auth::require_active_session(&state.session, &token, client_id)?;
 
-    let send_sessions = state
-        .send_sessions()
+    let file_handles = state
+        .file_handles()
         .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a send server"))?;
 
     let file_entry = state
@@ -63,8 +64,8 @@ pub async fn send_handler(
         .ok_or_else(|| anyhow::anyhow!("Invalid file index"))?;
 
     // Calc chunk boundries
-    let start = chunk_index as u64 * CHUNK_SIZE;
-    let end = std::cmp::min(start + CHUNK_SIZE, file_entry.size);
+    let start = chunk_index as u64 * config::CHUNK_SIZE;
+    let end = std::cmp::min(start + config::CHUNK_SIZE, file_entry.size);
 
     if start >= file_entry.size {
         return Err(anyhow::anyhow!("Chunk index out of bounds").into());
@@ -72,54 +73,40 @@ pub async fn send_handler(
 
     let chunk_len = (end - start) as usize;
 
-    // Initialize session and open file
-    let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
-
-    send_sessions
-        .entry(file_index)
-        .or_insert_with(|| FileSendState::new(total_chunks));
-
     // Open file on first access
-    if send_sessions.file_handle.is_none() {
-        let file = std::fs::File::open(&file_entry.full_path).context(format!(
-            "Failed to open file for sending: {}",
-            file_entry.full_path.display()
-        ))?;
+    let file_handle = file_handles
+        .entry(file_index)
+        .or_insert_with(|| match std::fs::File::open(&file_entry.full_path) {
+            Ok(file) => {
+                tracing::debug!("Opened file handle for {}", file_entry.name);
+                Arc::new(file)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to open file {}: {}",
+                    file_entry.full_path.display(),
+                    e
+                );
+                panic!("Failed to open file for sending");
+            }
+        })
+        .clone();
 
-        tracing::debug!(
-            "Opened file handle for {}, total chunks: {}",
-            file_entry.name,
-            total_chunks
-        );
+    // read chunk
+    let buffer = io::read_chunk_at_position(&file_handle, start, chunk_len)?;
 
-        send_sessions.file_hanle = Some(Arc::new(file));
-    }
-
-    let mut reader = BufReader::with_capacity(CHUNK_SIZE as usize * 2, file);
-    reader.seek(SeekFrom::Start(start)).await?;
-
-    let chunk_len = (end - start) as usize;
-    let mut buffer = vec![0u8; chunk_len];
-    reader.read_exact(&mut buffer).await.context(format!(
-        "Failed to read chunk {} from file {} (offset {})",
-        chunk_index, file_entry.name, start
-    ))?;
-
-    // Hash plaintext chunk for verification
-    if let Some(mut session) = send_sessions.get_mut(&file_index) {
-        session.process_chunk(chunk_index, &buffer);
-    }
-
+    // encrypt and return
     let file_nonce = Nonce::from_base64(&file_entry.nonce)
         .context(format!("Invalid nonce for file: {}", file_entry.name))?;
 
     let cipher = state.session.cipher();
 
-    let encrypted = encrypt_chunk_at_position(cipher, &file_nonce, &buffer, chunk_index as u32)
-        .context(format!(
-            "Failed to encrypt chunk {} of file {}",
-            chunk_index, file_entry.name
-        ))?;
+    let encrypted =
+        crypto::encrypt_chunk_at_position(cipher, &file_nonce, buffer, chunk_index as u32)
+            .context(format!(
+                "Failed to encrypt chunk {} of file {}",
+                chunk_index, file_entry.name
+            ))?;
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -136,6 +123,15 @@ pub async fn complete_download(
     auth::require_active_session(&state.session, &token, client_id)?;
 
     state.session.complete(&token, client_id);
+
+    // Close all file handles for this session
+    if let Some(file_handles) = state.file_handles() {
+        let count = file_handles.len();
+        file_handles.clear();
+        if count > 0 {
+            tracing::debug!("Closed {} file handle(s)", count);
+        }
+    }
 
     // Set progress to 100% to signal completion and close TUI
     let _ = state.progress_sender.send(100.0);
@@ -154,38 +150,12 @@ pub async fn get_file_hash(
     let client_id = &params.client_id;
     auth::require_active_session(&state.session, &token, client_id)?;
 
-    let send_sessions = state
-        .send_sessions()
-        .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a send server"))?;
-
-    // Fast path: Check cache first
-    if let Some(session) = send_sessions.get(&file_index) {
-        if let Some(ref hash) = session.finalized_hash {
-            return Ok(axum::Json(serde_json::json!({
-                "sha256": hash
-            })));
-        }
-    }
-
-    // Slow path: Compute from disk and cache
     let file_entry = state
         .session
         .get_file(file_index)
         .ok_or_else(|| anyhow::anyhow!("Invalid file index"))?;
 
     let hash = compute_file_hash(&file_entry.full_path).await?;
-
-    // Cache the result
-    let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
-
-    send_sessions
-        .entry(file_index)
-        .and_modify(|s| s.finalized_hash = Some(hash.clone()))
-        .or_insert_with(|| {
-            let mut session = FileSendState::new(total_chunks);
-            session.finalized_hash = Some(hash.clone());
-            session
-        });
 
     Ok(axum::Json(serde_json::json!({
         "sha256": hash
@@ -194,20 +164,32 @@ pub async fn get_file_hash(
 
 async fn compute_file_hash(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
-    use tokio::io::AsyncReadExt;
+    // Use spawn_blocking for disk I/O
+    let path = path.to_owned();
 
-    let file = tokio::fs::File::open(path).await?;
-    let mut reader = tokio::io::BufReader::with_capacity(65536, file);
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 65536]; // 64 KB for efficient I/O
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
 
-    loop {
-        let n = reader.read(&mut buffer).await?;
-        if n == 0 {
-            break;
+        let mut file = std::fs::File::open(&path).context(format!(
+            "Failed to open file for hashing: {}",
+            path.display()
+        ))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 65536]; // 64 KB chunks
+
+        loop {
+            let n = file
+                .read(&mut buffer)
+                .context("Failed to read file for hashing")?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
         }
-        hasher.update(&buffer[..n]);
-    }
 
-    Ok(hex::encode(hasher.finalize()))
+        Ok::<String, anyhow::Error>(hex::encode(hasher.finalize()))
+    })
+    .await
+    .context("Hash computation task panicked")?
 }

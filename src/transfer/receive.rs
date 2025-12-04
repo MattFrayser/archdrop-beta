@@ -1,8 +1,8 @@
 use crate::server::auth;
-use crate::server::state::AppState;
-use crate::transfer::chunk::FileReceiveState;
+use crate::server::state::{AppState, FileReceiveState};
 use crate::transfer::storage::ChunkStorage;
-use crate::transfer::util::{hash_path, validate_path, AppError};
+use crate::transfer::util;
+use crate::transfer::util::AppError;
 use crate::types::Nonce;
 use anyhow::{Context, Result};
 use axum::extract::{Multipart, Path, Query, State};
@@ -44,7 +44,7 @@ pub async fn receive_handler(
         .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a receive server"))?;
 
     // Get or create session
-    let file_id = hash_path(&payload.relative_path);
+    let file_id = util::hash_path(&payload.relative_path);
 
     // Sessions are claimed on first file and verified on rest
     let client_id = &payload.client_id;
@@ -67,7 +67,7 @@ pub async fn receive_handler(
             .ok_or_else(|| anyhow::anyhow!("Invalid session type"))?;
 
         // Validate provided path and join to base
-        validate_path(&payload.relative_path).context("Invalid file path")?;
+        util::validate_path(&payload.relative_path).context("Invalid file path")?;
         let dest_path = destination.join(&payload.relative_path);
 
         let storage = ChunkStorage::new(dest_path)
@@ -151,7 +151,7 @@ pub async fn finalize_upload(
     let relative_path = relative_path.ok_or_else(|| anyhow::anyhow!("Missing relativePath"))?;
 
     // Generate file ID and remove from sessions map
-    let file_id = hash_path(&relative_path);
+    let file_id = util::hash_path(&relative_path);
 
     let (_key, session) = receive_sessions
         .remove(&file_id)

@@ -76,27 +76,22 @@ impl Session {
 
     // Claims inactive session, creates client_id
     pub fn claim(&self, token: &str, client_id: &str) -> bool {
-        if token != self.token {
+        if token != self.token || self.active.load(Ordering::Acquire) {
             return false;
         }
-
         // Try claim
-        let claimed_ok = self
+        if self
             .active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok();
-
-        if claimed_ok {
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            // We won the race! Lock the client_id as the exclusive user.
             let mut stored_id = self.client_id.lock().unwrap();
             *stored_id = Some(client_id.to_string());
             true
         } else {
-            // check if client who claimed
-            let stored_id = self.client_id.lock().unwrap();
-            match stored_id.as_ref() {
-                Some(id) => id == client_id,
-                None => false,
-            }
+            // Lost the race or already active
+            false
         }
     }
 

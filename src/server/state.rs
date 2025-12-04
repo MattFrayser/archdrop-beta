@@ -3,14 +3,19 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::watch;
 
-use crate::{
-    server::session::Session,
-    transfer::chunk::{FileReceiveState, FileSendState},
-};
+use crate::{server::session::Session, transfer::storage::ChunkStorage};
+
+pub struct FileReceiveState {
+    pub storage: ChunkStorage,
+    pub total_chunks: usize,
+    pub nonce: String,
+    pub relative_path: String,
+    pub file_size: u64,
+}
 
 #[derive(Clone)]
 pub enum TransferStorage {
-    Send(Arc<DashMap<usize, FileSendState>>),
+    Send(Arc<DashMap<usize, Arc<std::fs::File>>>),
     Receive(Arc<DashMap<String, FileReceiveState>>),
 }
 
@@ -39,9 +44,9 @@ impl AppState {
 
     //-- Helper Functions for safe access
 
-    pub fn send_sessions(&self) -> Option<&Arc<DashMap<usize, FileSendState>>> {
+    pub fn file_handles(&self) -> Option<&Arc<DashMap<usize, Arc<std::fs::File>>>> {
         match &self.transfers {
-            TransferStorage::Send(sessions) => Some(sessions),
+            TransferStorage::Send(handles) => Some(handles),
             _ => None,
         }
     }
