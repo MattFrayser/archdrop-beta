@@ -1,6 +1,12 @@
 use crate::errors::AppError;
 use crate::server::session::Session;
 
+#[derive(serde::Deserialize)]
+pub struct ClientIdParam {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+}
+
 // Used for handlers that should only work with already claimed sessions
 pub fn require_active_session(
     session: &Session,

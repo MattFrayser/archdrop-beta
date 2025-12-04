@@ -1,6 +1,6 @@
 use crate::crypto::types::Nonce;
 use crate::errors::AppError;
-use crate::server::auth;
+use crate::server::auth::{self, ClientIdParam};
 use crate::server::state::{AppState, FileReceiveState};
 use crate::transfer::security;
 use crate::transfer::storage::ChunkStorage;
@@ -13,9 +13,14 @@ use serde_json::{json, Value};
 use tokio_util::bytes;
 
 #[derive(serde::Deserialize)]
-pub struct ClientIdParam {
-    #[serde(rename = "clientId")]
-    pub client_id: String,
+pub struct ClientManifestEntry {
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClientManifest {
+    pub files: Vec<ClientManifestEntry>,
 }
 
 #[derive(TryFromMultipart)]
@@ -32,6 +37,33 @@ pub struct ChunkUploadRequest {
     pub nonce: Option<String>,
     #[form_data(field_name = "clientId")]
     pub client_id: String,
+}
+
+pub async fn receive_manifest(
+    Path(token): Path<String>,
+    Query(params): Query<ClientIdParam>,
+    State(state): State<AppState>,
+    Json(manifest): Json<ClientManifest>,
+) -> Result<axum::Json<Value>, AppError> {
+    let client_id = &params.client_id;
+
+    // Claim session with manifest
+    auth::claim_or_validate_session(&state.session, &token, client_id)?;
+
+    // Calculate total chunks from manifest
+    let total_chunks: u64 = manifest
+        .files
+        .iter()
+        .map(|f| (f.size + crate::config::CHUNK_SIZE - 1) / crate::config::CHUNK_SIZE)
+        .sum();
+
+    // Update session with total chunks
+    state.session.set_total_chunks(total_chunks);
+
+    Ok(Json(json!({
+        "success": true,
+        "total_chunks": total_chunks
+    })))
 }
 
 pub async fn receive_handler(
@@ -118,6 +150,14 @@ pub async fn receive_handler(
         .storage
         .store_chunk(payload.chunk_index, payload.chunk, cipher, &nonce)
         .await?;
+
+    // Track progress
+    let (chunks_processed, total_chunks) = state.session.increment_received_chunk();
+
+    if total_chunks > 0 {
+        let progress = (chunks_processed as f64 / total_chunks as f64) * 100.0;
+        let _ = state.progress_sender.send(progress);
+    }
 
     Ok(Json(json!({
         "success": true,

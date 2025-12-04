@@ -18,7 +18,7 @@ pub async fn start_https(
     direction: ServerDirection,
     nonce: Nonce,
 ) -> Result<u16> {
-    let service = direction_to_str(direction);
+    let service = direction.to_string();
 
     // Clone needed before consuming server
     let session = server.session.clone();
@@ -58,7 +58,7 @@ pub async fn start_tunnel(
     direction: ServerDirection,
     nonce: Nonce,
 ) -> Result<u16> {
-    let service = direction_to_str(direction);
+    let service = direction.to_string();
 
     // Clone what we need before consuming server
     let session = server.session.clone();
@@ -162,7 +162,7 @@ async fn run_session(
     display_name: String,
     progress_receiver: tokio::sync::watch::Receiver<f64>,
     url: String,
-    service: &str,
+    service: String,
 ) -> Result<()> {
     // CancellationTokens
     let root_token = CancellationToken::new();
@@ -222,11 +222,11 @@ async fn run_session(
         result = tui_handle => {
             tracing::info!("Transfer completed successfully");
             result.context("TUI task failed")?;
-            ShutdownReason::Completed
+            ShutdownResult::Completed
         }
         _ = shutdown_token.cancelled() => {
             tracing::info!("Shutdown requested via Ctrl+C");
-            ShutdownReason::UserRequested
+            ShutdownResult::Forced
         }
     };
 
@@ -256,11 +256,6 @@ async fn run_session(
 //==========
 // SHUTDOWN
 //==========
-#[derive(Debug, Clone, Copy)]
-enum ShutdownReason {
-    Completed,
-    UserRequested,
-}
 
 enum ShutdownResult {
     Completed,
@@ -351,18 +346,31 @@ async fn cleanup_sessions(state: &AppState) {
         }
         TransferStorage::Receive(sessions) => {
             let count = sessions.len();
-            if count > 0 {
-                tracing::info!("Cleaning up {} receive session(s)", count);
+            if count == 0 {
+                return;
             }
-            sessions.clear();
+            tracing::info!("Cleaning up {} receive session(s)", count);
+
+            // Collect keys first. allows safe iteration and removal.
+            let keys: Vec<String> = sessions.iter().map(|entry| entry.key().clone()).collect();
+
+            // Drain sessions by taking ownership
+            let cleanup_tasks: Vec<_> = keys
+                .into_iter()
+                // take ownership FileReceiveState value
+                .filter_map(|key| sessions.remove(&key))
+                .map(|(_key, file_receive_state)| {
+                    // Spawn async cleanup operation task for each
+                    tokio::spawn(async move {
+                        if let Err(e) = file_receive_state.storage.cleanup().await {
+                            tracing::error!("Error during async cleanup: {}", e);
+                        }
+                    })
+                })
+                .collect();
+
+            futures::future::join_all(cleanup_tasks).await;
         }
     }
     tracing::debug!("Session cleanup complete");
-}
-
-fn direction_to_str(direction: ServerDirection) -> &'static str {
-    match direction {
-        ServerDirection::Send => "send",
-        ServerDirection::Receive => "receive",
-    }
 }

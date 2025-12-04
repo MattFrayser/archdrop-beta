@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 
 use crate::crypto::types::Nonce;
 use crate::errors::AppError;
-use crate::server::auth;
+use crate::server::auth::{self, ClientIdParam};
 use crate::server::state::AppState;
-use crate::transfer::io;
 use crate::transfer::manifest::Manifest;
 use crate::{config, crypto};
 use anyhow::{Context, Result};
@@ -23,12 +23,6 @@ pub struct ChunkParams {
     client_id: String,
 }
 
-#[derive(serde::Deserialize)]
-pub struct ClientIdParam {
-    #[serde(rename = "clientId")]
-    pub client_id: String,
-}
-
 pub async fn manifest_handler(
     Path(token): Path<String>,
     Query(params): Query<ClientIdParam>,
@@ -44,7 +38,7 @@ pub async fn manifest_handler(
         .manifest()
         .ok_or_else(|| anyhow::anyhow!("Not a send session"))?;
 
-    Ok(Json(manifest.as_ref().clone()))
+    Ok(Json(manifest.clone()))
 }
 
 pub async fn send_handler(
@@ -56,10 +50,6 @@ pub async fn send_handler(
 
     // Sessions are claimed by manifest, so just check client
     auth::require_active_session(&state.session, &token, client_id)?;
-
-    let file_handles = state
-        .file_handles()
-        .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a send server"))?;
 
     let file_entry = state
         .session
@@ -76,27 +66,14 @@ pub async fn send_handler(
 
     let chunk_len = (end - start) as usize;
 
-    // Open file on first access
-    let file_handle = file_handles
-        .entry(file_index)
-        .or_insert_with(|| match std::fs::File::open(&file_entry.full_path) {
-            Ok(file) => {
-                tracing::debug!("Opened file handle for {}", file_entry.name);
-                Arc::new(file)
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to open file {}: {}",
-                    file_entry.full_path.display(),
-                    e
-                );
-                panic!("Failed to open file for sending");
-            }
-        })
-        .clone();
-
     // read chunk
-    let buffer = io::read_chunk_at_position(&file_handle, start, chunk_len)?;
+    let buffer = read_chunk_blocking(file_entry.full_path.clone(), start, chunk_len)
+        .await
+        .context("Failed reading chunkdata")?;
+
+    let (new_total_chunks, session_total_chunks) = state.session.increment_sent_chunk();
+    let progress = (new_total_chunks as f64 / session_total_chunks as f64) * 100.0;
+    let _ = state.progress_sender.send(progress);
 
     // encrypt and return
     let file_nonce = Nonce::from_base64(&file_entry.nonce)
@@ -126,15 +103,6 @@ pub async fn complete_download(
     auth::require_active_session(&state.session, &token, client_id)?;
 
     state.session.complete(&token, client_id);
-
-    // Close all file handles for this session
-    if let Some(file_handles) = state.file_handles() {
-        let count = file_handles.len();
-        file_handles.clear();
-        if count > 0 {
-            tracing::debug!("Closed {} file handle(s)", count);
-        }
-    }
 
     // Set progress to 100% to signal completion and close TUI
     let _ = state.progress_sender.send(100.0);
@@ -195,4 +163,27 @@ async fn compute_file_hash(path: &std::path::Path) -> Result<String> {
     })
     .await
     .context("Hash computation task panicked")?
+}
+
+/// Opens, reads a chunk, and closes the file handle using a blocking task.
+async fn read_chunk_blocking(path: PathBuf, start: u64, chunk_len: usize) -> Result<Vec<u8>> {
+    // File reading is sync
+    tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(&path).context(format!(
+            "Failed to open file for sending: {}",
+            path.display()
+        ))?;
+
+        let mut buffer = vec![0u8; chunk_len];
+
+        // Seek to the starting position and read the chunk
+        file.seek(SeekFrom::Start(start))
+            .context("Failed to seek file")?;
+        file.read_exact(&mut buffer)
+            .context("Failed to read chunk")?;
+
+        Ok(buffer)
+    })
+    .await
+    .context("File read task panicked")?
 }

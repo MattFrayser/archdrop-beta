@@ -78,8 +78,8 @@ impl Nonce {
 
     pub fn with_counter(&self, counter: u32) -> [u8; 12] {
         let mut full_nonce = [0u8; 12];
-        full_nonce[..7].copy_from_slice(self.as_bytes());
-        full_nonce[7..11].copy_from_slice(&counter.to_be_bytes());
+        full_nonce[..8].copy_from_slice(self.as_bytes());
+        full_nonce[7..12].copy_from_slice(&counter.to_be_bytes());
 
         full_nonce
     }

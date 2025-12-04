@@ -17,9 +17,12 @@ function detectBrowserCapabilities() {
     }
 }
 
-//==========
-// UI
-//==========
+//==============
+// Global Cache
+//=============
+let cachedManifest = null
+let cachedToken = null
+let cachedClientId = null
 
 // Download button
 document.addEventListener('DOMContentLoaded', async () => {
@@ -30,13 +33,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load manifest and display files
     try {
-        const token = window.location.pathname.split('/').pop()
-        const clientId = getClientId()
+        cachedToken = window.location.pathname.split('/').pop()
+        cachedClientId = getClientId()
         const manifestResponse = await fetch(`/send/${token}/manifest?clientId=${clientId}`)
-        if (manifestResponse.ok) {
-            const manifest = await manifestResponse.json()
-            displayFileList(manifest.files)
+        if (!manifestResponse.ok) {
+            throw new Error(`Failed to fetch manifest: HTTP ${manifestResponse.status}`);
         }
+
+        cachedManifest = await manifestResponse.json()
+        displayFileList(manifest.files)
+
     } catch (error) {
         console.error('Failed to load file list:', error)
     }
@@ -66,10 +72,14 @@ function displayFileList(files) {
 // Logic
 //===========
 async function startDownload() {
-    const fileList = document.getElementById('fileList')
-    const fileItems = fileList.querySelectorAll('.file-item')
+    if (!cachedManifest || !cachedToken) {
+        alert('File list not loaded. Please refresh the page.');
+        return;
+    }
 
     // Show progress bars
+    const fileList = document.getElementById('fileList')
+    const fileItems = fileList.querySelectorAll('.file-item')
     fileItems.forEach(item => {
         const progress = item.querySelector('.file-progress')
         if (progress) progress.classList.add('show')
@@ -80,17 +90,9 @@ async function startDownload() {
         const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
-        // Fetch manifest
-        const manifestResponse = await fetch(`/send/${token}/manifest`)
-        if (!manifestResponse.ok) {
-            throw new Error(`Failed to fetch file list: HTTP ${manifestResponse.status}`)
-        }
-
-        const manifest = await manifestResponse.json()
-
         // download files concurrently
         await runWithConcurrency(
-            manifest.files.map((file, index) => ({ file, index, fileItem: fileItems[index] })),
+            cachedManifest.files.map((file, index) => ({ file, index, fileItem: fileItems[index] })),
             async ({ file, fileItem }) => {
                 fileItem.classList.add('downloading')
                 try {

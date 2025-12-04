@@ -1,9 +1,11 @@
 use crate::ui::output;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+//use std::process::ChildStderr;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, Command};
 use tracing::{debug, info, warn};
 
 const TUNNEL_URL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -29,7 +31,7 @@ impl CloudflareTunnel {
 
         // spawn cloudflared process & capture output
         let mut child = Command::new("cloudflared")
-            .args(&[
+            .args([
                 "tunnel",
                 "--url",
                 &format!("http://localhost:{}", local_port),
@@ -40,9 +42,14 @@ impl CloudflareTunnel {
                 "http2",
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("Failed to spawn cloudflared process")?;
+
+        // log stderr for debugging
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(log_stderr(stderr));
+        }
 
         // Parse stream with timeout
         // reader keeps stream alive after url
@@ -138,4 +145,19 @@ fn get_available_port() -> Option<u16> {
         .ok()
         .and_then(|l| l.local_addr().ok())
         .map(|a| a.port())
+}
+
+// Cloudflar only uses stderr for logging
+async fn log_stderr(stderr: ChildStderr) {
+    let reader = BufReader::new(stderr);
+    let mut lines = reader.lines();
+
+    // Cloudflare uses stderr for both logs and errors
+    // errors will contain error/fatal
+    while let Some(line) = lines.next_line().await.ok().flatten() {
+        let lowercase_line = line.to_lowercase();
+        if lowercase_line.contains("error") || lowercase_line.contains("fatal") {
+            tracing::error!("cloudflared stderr: {}", line);
+        }
+    }
 }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::crypto::types::Nonce;
+use crate::{crypto::types::Nonce, transfer::security};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FileEntry {
@@ -45,6 +45,8 @@ impl Manifest {
                 .unwrap_or("unnamed")
                 .to_string();
 
+            security::validate_filename(&name).context("Invalid fine name")?;
+
             // Unique nonce for each file
             let nonce = Nonce::new();
 
@@ -59,5 +61,13 @@ impl Manifest {
         }
 
         Ok(Manifest { files })
+    }
+
+    /// Calculate total chunks needed for all files in manifest
+    pub fn total_chunks(&self) -> u64 {
+        self.files
+            .iter()
+            .map(|f| (f.size + crate::config::CHUNK_SIZE - 1) / crate::config::CHUNK_SIZE)
+            .sum()
     }
 }

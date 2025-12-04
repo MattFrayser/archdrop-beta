@@ -38,6 +38,10 @@ pub fn create_receive_router(state: &AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "OK" }))
         .route(
+            "/receive/:token/manifest",
+            post(transfer::receive_handlers::receive_manifest),
+        )
+        .route(
             "/receive/:token/chunk",
             post(transfer::receive_handlers::receive_handler),
         )

@@ -4,9 +4,7 @@
 const CHUNK_SIZE = __CHUNK_SIZE__ // Run time injected from server
 const MAX_MEMORY = 100 * 1024 * 1024 // 100MB
 const MAX_CONCURRENT = 8 // Parallel chunk limit (default)
-const MAX_CONCURRENT_DOWNLOADS = 8 // Parallel chunk download limit
-const MAX_CONCURRENT_FILES = 3 // Parallel file download limit
-const FILE_SYSTEM_API_THRESHOLD = 200 * 1024 * 1024 // 200MB - use FileSystem API for files larger than this
+const FILE_SYSTEM_API_THRESHOLD = 100 * 1024 * 1024 // 100MB - use FileSystem API for files larger than this
 
 //============
 // URL Helpers

@@ -100,6 +100,29 @@ function removeFile(index) {
 //===========
 // LOGIC
 //==========
+async function sendManifest(token, files) {
+    const manifest = {
+        files: files.map(file => ({
+            relative_path: file.webkitRelativePath || file.name,
+            size: file.size
+        }))
+    };
+
+    const clientId = getClientId();
+    const url = `/receive/${token}/manifest?clientId=${clientId}`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manifest)
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to send manifest');
+    }
+
+    return await response.json();
+}
+
 async function uploadFiles(selectedFiles) {
     if (selectedFiles.length === 0) {
         alert('Please select files')
@@ -120,6 +143,9 @@ async function uploadFiles(selectedFiles) {
         const { key } = await getCredentialsFromUrl()
         const token = window.location.pathname.split('/').pop()
 
+        // Send manifest first so server knows total chunks
+        await sendManifest(token, selectedFiles);
+
         await runWithConcurrency(
             selectedFiles.map((file, index) => ({ file, index, fileItem: fileItems[index] })),
             async ({ file, fileItem }) => {
@@ -127,7 +153,7 @@ async function uploadFiles(selectedFiles) {
                 
                 fileItem.classList.add('uploading')
                 try {
-                    await uploadFile(token, file, relativePath, key, fileItem)
+                    await uploadFile(file, relativePath,token, key, fileItem)
                     fileItem.classList.remove('uploading')
                     fileItem.classList.add('completed')
                 } catch (error) {

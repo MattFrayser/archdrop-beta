@@ -52,6 +52,10 @@ impl ChunkStorage {
         self.chunks_received.contains(&chunk_index)
     }
 
+    pub fn get_path(&self) -> &PathBuf {
+        &self.path
+    }
+
     pub fn chunk_count(&self) -> usize {
         self.chunks_received.len()
     }
@@ -79,6 +83,18 @@ impl ChunkStorage {
         ))?;
 
         self.chunks_received.insert(chunk_index);
+
+        Ok(())
+    }
+
+    // Clean up w/o drop, happy path
+    pub async fn cleanup(mut self) -> Result<()> {
+        if !self.disarmed {
+            self.disarmed = true; // prevent Drop
+            tokio::fs::remove_file(&self.path)
+                .await
+                .context("Failed to remove incomplete file")?;
+        }
 
         Ok(())
     }
@@ -113,14 +129,18 @@ impl ChunkStorage {
 impl Drop for ChunkStorage {
     fn drop(&mut self) {
         if !self.disarmed {
-            let path = self.path.clone();
-
-            // new thread for blocking io
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    eprintln!("Error cleaning up temporary file {}: {}", path.display(), e);
-                }
-            });
+            // Using drop as guarnteed way to remove files
+            // Drop is sync so must block when to clean up
+            // File deletion is fast so will not block long
+            if let Err(e) = std::fs::remove_file(&self.path) {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    error = %e,
+                    "Failed to clean up temporary file"
+                );
+            } else {
+                tracing::debug!("Cleaned up incomplete transfer file");
+            }
         }
     }
 }
