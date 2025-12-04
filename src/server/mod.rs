@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod modes;
 pub mod session;
 pub mod state;

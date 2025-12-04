@@ -4,6 +4,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use rcgen::generate_simple_self_signed;
 use std::net::UdpSocket;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 pub async fn wait_for_server_ready(port: u16, timeout_secs: u64, use_https: bool) -> Result<()> {
     let protocol = if use_https { "https" } else { "http" };
@@ -43,12 +44,22 @@ pub fn spawn_tui(
     qr_code: String,
     is_recieving: bool,
     status_message: watch::Receiver<Option<String>>,
+    cancel_token: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ui = TransferUI::new(progress, file_name, qr_code, is_recieving, status_message);
 
-        if let Err(e) = ui.run().await {
-            eprintln!("ui err: {}", e);
+        // Run TUI w/ cancellation support
+        tokio::select! {
+            result = ui.run() => {
+                if let Err(e) = result {
+                    eprintln!("ui err: {}", e);
+                }
+            }
+            _ = cancel_token.cancelled() => {
+                tracing::debug!("TUI task cancelled gracefully");
+                // TUI will drop and restore terminal automatically
+            }
         }
     })
 }

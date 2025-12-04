@@ -1,8 +1,10 @@
 use std::io::SeekFrom;
 
+use crate::server::auth;
 use crate::server::state::AppState;
 use crate::transfer::chunk::FileSendState;
 use crate::transfer::manifest::Manifest;
+use crate::transfer::receive::ClientIdParam;
 use crate::transfer::util::AppError;
 use crate::types::Nonce;
 use crate::{config::CHUNK_SIZE, crypto::encrypt_chunk_at_position};
@@ -25,12 +27,12 @@ pub struct ChunkParams {
 
 pub async fn manifest_handler(
     Path(token): Path<String>,
+    Query(params): Query<ClientIdParam>,
     State(state): State<AppState>,
 ) -> Result<Json<Manifest>, AppError> {
-    // Validate token
-    if token != state.session.token() {
-        return Err(anyhow::anyhow!("Invalid token").into());
-    }
+    // Session claimed when fetching manifest
+    // Manifests holds info about files (sizes, names) only client should see
+    auth::claim_or_validate_session(&state.session, &token, &params.client_id)?;
 
     // Get manifest from session
     let manifest = state
@@ -48,25 +50,17 @@ pub async fn send_handler(
 ) -> Result<Response<Body>, AppError> {
     let client_id = &params.client_id;
 
-    // Claim token only once on first chunk
-    if file_index == 0 && chunk_index == 0 && !state.session.claim(&token, client_id) {
-        return Err(anyhow::anyhow!("Session already claimed").into());
-    }
-    if !state.session.is_active(&token, client_id) {
-        return Err(anyhow::anyhow!("Invalid session").into());
-    }
+    // Sessions are claimed by manifest, so just check client
+    auth::require_active_session(&state.session, &token, client_id)?;
+
+    let send_sessions = state
+        .send_sessions()
+        .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a send server"))?;
 
     let file_entry = state
         .session
         .get_file(file_index)
         .ok_or_else(|| anyhow::anyhow!("Invalid file index"))?;
-
-    // Initialize send session for hash tracking
-    let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
-    state
-        .send_sessions
-        .entry(file_index)
-        .or_insert_with(|| FileSendState::new(total_chunks));
 
     // Calc chunk boundries
     let start = chunk_index as u64 * CHUNK_SIZE;
@@ -76,13 +70,30 @@ pub async fn send_handler(
         return Err(anyhow::anyhow!("Chunk index out of bounds").into());
     }
 
-    // Open with buffered reading for better performance
-    let file = tokio::fs::File::open(&file_entry.full_path)
-        .await
-        .context(format!(
+    let chunk_len = (end - start) as usize;
+
+    // Initialize session and open file
+    let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
+
+    send_sessions
+        .entry(file_index)
+        .or_insert_with(|| FileSendState::new(total_chunks));
+
+    // Open file on first access
+    if send_sessions.file_handle.is_none() {
+        let file = std::fs::File::open(&file_entry.full_path).context(format!(
             "Failed to open file for sending: {}",
             file_entry.full_path.display()
         ))?;
+
+        tracing::debug!(
+            "Opened file handle for {}, total chunks: {}",
+            file_entry.name,
+            total_chunks
+        );
+
+        send_sessions.file_hanle = Some(Arc::new(file));
+    }
 
     let mut reader = BufReader::with_capacity(CHUNK_SIZE as usize * 2, file);
     reader.seek(SeekFrom::Start(start)).await?;
@@ -95,7 +106,7 @@ pub async fn send_handler(
     ))?;
 
     // Hash plaintext chunk for verification
-    if let Some(mut session) = state.send_sessions.get_mut(&file_index) {
+    if let Some(mut session) = send_sessions.get_mut(&file_index) {
         session.process_chunk(chunk_index, &buffer);
     }
 
@@ -120,10 +131,9 @@ pub async fn complete_download(
     Query(params): Query<ChunkParams>,
     State(state): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
+    // Session must be active and owned to complete
     let client_id = &params.client_id;
-    if !state.session.is_active(&token, client_id) {
-        return Err(anyhow::anyhow!("Invalid token").into());
-    }
+    auth::require_active_session(&state.session, &token, client_id)?;
 
     state.session.complete(&token, client_id);
 
@@ -142,12 +152,14 @@ pub async fn get_file_hash(
     State(state): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
     let client_id = &params.client_id;
-    if !state.session.is_active(&token, client_id) {
-        return Err(anyhow::anyhow!("Invalid token").into());
-    }
+    auth::require_active_session(&state.session, &token, client_id)?;
+
+    let send_sessions = state
+        .send_sessions()
+        .ok_or_else(|| anyhow::anyhow!("Invalid server mode: not a send server"))?;
 
     // Fast path: Check cache first
-    if let Some(session) = state.send_sessions.get(&file_index) {
+    if let Some(session) = send_sessions.get(&file_index) {
         if let Some(ref hash) = session.finalized_hash {
             return Ok(axum::Json(serde_json::json!({
                 "sha256": hash
@@ -165,8 +177,8 @@ pub async fn get_file_hash(
 
     // Cache the result
     let total_chunks = ((file_entry.size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
-    state
-        .send_sessions
+
+    send_sessions
         .entry(file_index)
         .and_modify(|s| s.finalized_hash = Some(hash.clone()))
         .or_insert_with(|| {

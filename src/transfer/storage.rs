@@ -4,6 +4,7 @@
 
 use aes_gcm::Aes256Gcm;
 use anyhow::{Context, Result};
+use axum::body::Bytes;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::SeekFrom;
@@ -58,7 +59,7 @@ impl ChunkStorage {
     pub async fn store_chunk(
         &mut self,
         chunk_index: usize,
-        encrypted_data: Vec<u8>,
+        encrypted_data: Bytes,
         cipher: &Aes256Gcm,
         nonce: &Nonce,
     ) -> Result<()> {

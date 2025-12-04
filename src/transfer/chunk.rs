@@ -1,6 +1,6 @@
 use crate::transfer::storage::ChunkStorage;
 use sha2::{digest::Digest, Sha256};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 pub struct FileReceiveState {
     pub storage: ChunkStorage,
@@ -11,6 +11,7 @@ pub struct FileReceiveState {
 }
 
 pub struct FileSendState {
+    pub file_handle: Option<Arc<std::fs::File>>,
     pub hasher: Sha256,
     pub next_chunk_to_hash: usize,
     pub buffered_chunks: HashMap<usize, Vec<u8>>,
@@ -21,6 +22,7 @@ pub struct FileSendState {
 impl FileSendState {
     pub fn new(total_chunks: usize) -> Self {
         Self {
+            file_handle: None,
             hasher: Sha256::new(),
             next_chunk_to_hash: 0,
             buffered_chunks: HashMap::new(),
